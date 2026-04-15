@@ -303,5 +303,206 @@ class TestStateStore(unittest.TestCase):
             self.assertEqual(s2.halt_reason(), "test_reason")
 
 
+class TestExitLogic(unittest.TestCase):
+    """trail_pct / max_hold_bars と exit 優先順の確認。"""
+
+    EXITS_CFG: dict = {
+        **BASE_CFG,
+        "exits": {
+            "stop_loss_pct": -4.0, "take_profit_pct": 6.0, "cooldown_min": 180,
+            "trail_pct": 3.0, "max_hold_bars": 288,
+        },
+        "loop": {"max_orders_per_cycle": 2, "watch_interval_sec": 300},
+    }
+
+    def _state_with_pos(
+        self, td: str, entry: float = 10_000_000.0,
+        highest: float | None = None, entry_ts: float | None = None,
+    ) -> StateStore:
+        import time
+        s = StateStore(path=str(Path(td) / "state.json"))
+        s.set_position(Position(
+            "BTC_JPY", 10000.0, entry,
+            entry_ts if entry_ts is not None else time.time(),
+            highest if highest is not None else entry,
+        ))
+        return s
+
+    def _snap(self, last: float, ts: float | None = None) -> MarketSnapshot:
+        import time
+        from market_watcher import Ticker
+        t = ts if ts is not None else time.time()
+        return MarketSnapshot(
+            ts=t,
+            tickers={"BTC_JPY": Ticker("BTC_JPY", last, last - 1, last + 1, 1.0, t)},
+        )
+
+    def test_trail_fires_from_peak(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            state = self._state_with_pos(td, highest=10_500_000)
+            g = RiskGuard(self.EXITS_CFG, state)
+            # 現在値 10.15M → peak 10.5M から -3.33% 下落、entry 10M から +1.5%
+            decisions = g.evaluate_sells(self._snap(10_150_000))
+            self.assertEqual(len(decisions), 1)
+            self.assertIn("trail", decisions[0].reason)
+
+    def test_trail_skipped_when_peak_at_entry(self) -> None:
+        """peak が entry と同じ（未上昇）なら trail は発火しない。"""
+        with tempfile.TemporaryDirectory() as td:
+            state = self._state_with_pos(td, highest=10_000_000)
+            g = RiskGuard(self.EXITS_CFG, state)
+            decisions = g.evaluate_sells(self._snap(9_800_000))  # -2%
+            self.assertEqual(len(decisions), 0)
+
+    def test_max_hold_fires_after_limit(self) -> None:
+        import time
+        with tempfile.TemporaryDirectory() as td:
+            # 288 bars × 300s = 86400s = 24h. 25h 保有で発火。
+            state = self._state_with_pos(
+                td, entry_ts=time.time() - 86400 - 3600,
+            )
+            g = RiskGuard(self.EXITS_CFG, state)
+            decisions = g.evaluate_sells(self._snap(10_100_000))
+            self.assertEqual(len(decisions), 1)
+            self.assertIn("max_hold", decisions[0].reason)
+
+    def test_priority_sl_over_trail(self) -> None:
+        """SL 条件が勝つ。trail も同時に満たしていても SL が先。"""
+        with tempfile.TemporaryDirectory() as td:
+            state = self._state_with_pos(td, highest=10_500_000)
+            g = RiskGuard(self.EXITS_CFG, state)
+            decisions = g.evaluate_sells(self._snap(9_500_000))  # SL -5%
+            self.assertEqual(len(decisions), 1)
+            self.assertIn("stop_loss", decisions[0].reason)
+
+    def test_priority_trail_over_tp(self) -> None:
+        """TP と trail 両方満たすとき trail が勝つ（backtest と同じ）。"""
+        with tempfile.TemporaryDirectory() as td:
+            state = self._state_with_pos(td, highest=11_000_000)
+            g = RiskGuard(self.EXITS_CFG, state)
+            # 10.65M: entry +6.5% (TP 条件満たす), peak 11M から -3.18% (trail 条件満たす)
+            decisions = g.evaluate_sells(self._snap(10_650_000))
+            self.assertEqual(len(decisions), 1)
+            self.assertIn("trail", decisions[0].reason)
+
+    def test_trail_pct_zero_disables(self) -> None:
+        cfg = {**self.EXITS_CFG,
+               "exits": {**self.EXITS_CFG["exits"], "trail_pct": 0.0}}
+        with tempfile.TemporaryDirectory() as td:
+            state = self._state_with_pos(td, highest=10_500_000)
+            g = RiskGuard(cfg, state)
+            decisions = g.evaluate_sells(self._snap(10_150_000))
+            self.assertEqual(len(decisions), 0)
+
+    def test_max_hold_zero_disables(self) -> None:
+        import time
+        cfg = {**self.EXITS_CFG,
+               "exits": {**self.EXITS_CFG["exits"], "max_hold_bars": 0,
+                         "trail_pct": 0.0}}
+        with tempfile.TemporaryDirectory() as td:
+            state = self._state_with_pos(
+                td, entry_ts=time.time() - 86400 - 3600,
+            )
+            g = RiskGuard(cfg, state)
+            decisions = g.evaluate_sells(self._snap(10_100_000))
+            self.assertEqual(len(decisions), 0)
+
+    def test_highest_px_updates_during_sell_eval(self) -> None:
+        """新高値が来れば pos.highest_px も更新される。"""
+        with tempfile.TemporaryDirectory() as td:
+            state = self._state_with_pos(td, highest=10_100_000)
+            g = RiskGuard(self.EXITS_CFG, state)
+            g.evaluate_sells(self._snap(10_500_000))
+            pos = state.positions()["BTC_JPY"]
+            self.assertEqual(pos.highest_px, 10_500_000)
+
+    def test_position_from_dict_legacy_has_no_highest_px(self) -> None:
+        """既存 state.json (highest_px なし) でも読めて entry_price にフォールバック。"""
+        d = {"symbol": "BTC_JPY", "size_jpy": 10000.0,
+             "entry_price": 5_000_000.0, "entry_ts": 100.0}
+        p = Position.from_dict(d)
+        self.assertEqual(p.highest_px, 5_000_000.0)
+
+
+class TestRegimeGate(unittest.TestCase):
+    """main.build_regime_gate の構築と挙動。"""
+
+    @staticmethod
+    def _write_ndx_csv(path: Path, n: int = 50, rising: bool = True) -> None:
+        """n 日分の擬似 NDX daily CSV を書き出す。"""
+        lines = ["ts,date,open,high,low,close"]
+        for i in range(n):
+            ts = 1_000_000 + i * 86400
+            close = (100 + i) if rising else (100 + (n - i))  # 上昇 or 下降
+            lines.append(
+                f"{ts},2026-01-{(i % 28) + 1:02d},"
+                f"{close},{close + 1},{close - 1},{close}"
+            )
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_returns_none_when_not_configured(self) -> None:
+        from main import build_regime_gate
+        self.assertIsNone(build_regime_gate({}))
+
+    def test_returns_none_when_disabled(self) -> None:
+        from main import build_regime_gate
+        self.assertIsNone(
+            build_regime_gate({"regime_filter": {"enabled": False}})
+        )
+
+    def test_returns_none_when_csv_missing(self) -> None:
+        from main import build_regime_gate
+        gate = build_regime_gate({
+            "regime_filter": {
+                "enabled": True,
+                "ndx_trend": {
+                    "enabled": True,
+                    "csv_path": "/nonexistent/path/NDX.csv",
+                    "ma_short": 5, "ma_long": 10,
+                },
+            },
+        })
+        self.assertIsNone(gate)
+
+    def test_uptrend_allows_buy(self) -> None:
+        from main import build_regime_gate
+        with tempfile.TemporaryDirectory() as td:
+            csv = Path(td) / "NDX.csv"
+            self._write_ndx_csv(csv, n=50, rising=True)
+            gate = build_regime_gate({
+                "regime_filter": {
+                    "enabled": True,
+                    "ndx_trend": {
+                        "enabled": True, "csv_path": str(csv),
+                        "ma_short": 5, "ma_long": 10,
+                    },
+                },
+            })
+            self.assertIsNotNone(gate)
+            # 30 日目相当: 単調増加なので ma_short > ma_long
+            allow, reason = gate(1_000_000 + 30 * 86400)
+            self.assertTrue(allow)
+            self.assertEqual(reason, "")
+
+    def test_downtrend_blocks_buy(self) -> None:
+        from main import build_regime_gate
+        with tempfile.TemporaryDirectory() as td:
+            csv = Path(td) / "NDX.csv"
+            self._write_ndx_csv(csv, n=50, rising=False)
+            gate = build_regime_gate({
+                "regime_filter": {
+                    "enabled": True,
+                    "ndx_trend": {
+                        "enabled": True, "csv_path": str(csv),
+                        "ma_short": 5, "ma_long": 10,
+                    },
+                },
+            })
+            self.assertIsNotNone(gate)
+            allow, reason = gate(1_000_000 + 30 * 86400)
+            self.assertFalse(allow)
+            self.assertIn("ndx_trend", reason)
+
+
 if __name__ == "__main__":
     unittest.main()
