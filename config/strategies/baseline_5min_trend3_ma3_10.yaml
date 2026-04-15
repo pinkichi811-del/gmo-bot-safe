@@ -1,0 +1,135 @@
+# =============================================================================
+# 旧 v1 Pattern A（2026-03 時点の旧 champion）
+# -----------------------------------------------------------------------------
+# この設定は現行 CHAMPION から **差し替えられた** 過去候補。参考保存。
+#
+# 成績（fee 0.05% 込み）:
+#   train 2024-01..2025-06: 285 trades, +1.345%, PF 1.38, DD 0.29%
+#   val   2025-07..2025-12:  45 trades, +0.077%, PF 1.15, DD 0.21%
+#   final 2026-01..2026-03:  52 trades, -0.193%, PF 0.75, DD 0.43%
+#
+# 差し替え理由:
+#   - train は高いが val/final で overfit 傾向が露呈（final PF 0.75）
+#   - 新 champion（5min trend>=5 ma=5/20）は train/val/final すべて PF>=1.00
+#
+# 現 CHAMPION との差分:
+#   trend.short_ma:   3  (champion: 5)
+#   trend.long_ma:    10 (champion: 20)
+#   buy_candidate.trend: 3 (champion: 5)
+# =============================================================================
+
+exchange: gmo_coin
+market: spot
+mode: dry_run
+
+symbols:
+  core: [BTC_JPY]
+  satellite: []
+
+limits:
+  max_watch: 5
+  max_positions: 1
+  min_cash_ratio: 0.20
+  max_core_ratio: 0.35
+  max_sat_ratio: 0.25
+
+loop:
+  watch_interval_sec: 300
+  score_interval_sec: 300
+  max_orders_per_cycle: 1
+
+scorer:
+  ai_enabled: true
+  ai_weight: 0.3
+  rule_weight: 0.7
+  base_score: 60.0
+
+  trend:
+    short_ma: 3
+    long_ma: 10
+    ratio_clamp: 0.05
+    max_magnitude: 30.0
+
+  liquidity:
+    window: 10
+    volume_divisor: 5.0
+    max_score: 20.0
+
+  heat:
+    window: 5
+    up_threshold_pct: 5.0
+    down_threshold_pct: 5.0
+    up_scale_pct: 10.0
+    down_scale_pct: 10.0
+    up_max_penalty: 20.0
+    down_max_penalty: 10.0
+    neutral_bonus: 5.0
+
+  dup_penalty:
+    same_symbol: -15.0
+    same_group: -5.0
+
+  thresholds:
+    buy_candidate:
+      total: 70
+      trend: 3
+      liquidity: 0
+      heat: -8
+    strong_buy:
+      total: 78
+      trend: 8
+      liquidity: 5
+      heat: -5
+    dup_penalty_block: -8
+
+  volatility:
+    window: 20
+    low_threshold_pct: 1.0
+    high_threshold_pct: 5.0
+    max_penalty: 10.0
+
+  spread:
+    tight_threshold_pct: 0.05
+    wide_threshold_pct: 0.5
+    max_penalty: 10.0
+
+  rsi:
+    period: 14
+    overbought: 75
+    oversold: 25
+    max_overbought_penalty: 5.0
+    max_oversold_bonus: 3.0
+
+  cash_bonus:
+    high_threshold: 0.5
+    mid_threshold: 0.3
+    high_bonus: 5.0
+    mid_bonus: 2.0
+
+exits:
+  stop_loss_pct: -2.0
+  take_profit_pct: 3.5
+  cooldown_min: 0
+
+risk:
+  halt_on_error: true
+  halt_on_price_gap_pct: 10.0
+  max_consecutive_errors: 5
+  per_trade_jpy_max: 10000
+  block_buy_below_cash_ratio: 0.20
+  stop_file: ./STOP
+  auto_resume: false
+
+portfolio:
+  initial_cash_jpy: 1000000
+
+notifier:
+  enabled: false
+  on_halt: true
+  on_order: true
+  on_error: true
+
+logging:
+  level: INFO
+  dir: ./logs
+  backup_count: 14

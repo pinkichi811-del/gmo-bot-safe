@@ -1,0 +1,196 @@
+# =============================================================================
+# gmo-bot-safe アプリ設定
+# -----------------------------------------------------------------------------
+# 本ファイルの値は「ルール（risk_guard）が握る最終判定の閾値」を含む。
+# 変更前に CLAUDE.md の制約と DESIGN.md の運用ルールを必ず確認すること。
+# .env の RUN_MODE が mode より優先される。
+# -----------------------------------------------------------------------------
+# CHAMPION: 5min trend>=5 ma=5/20 (BTC 単独)
+#   train +1.06% PF 1.45 / val +0.00% PF 1.00 / final +0.00% PF 1.01
+#   2026-04 時点の本命。差し替え履歴は DESIGN.md 参照。
+# 代替候補:
+#   - config/strategies/baseline_5min_trend3_ma3_10.yaml（旧 Pattern A / 参考）
+#   - config/strategies/research_1h_trend5_ma5_20.yaml（1H 版 / 並走研究用）
+# =============================================================================
+
+exchange: gmo_coin
+market: spot
+mode: dry_run            # dry_run | live   （現段階は必ず dry_run）
+
+# -----------------------------------------------------------------------------
+# 監視銘柄
+#   CHAMPION 設定では BTC 単独運用。ETH/SOL/XRP/DOGE は研究用に残すが有効化しない。
+#   もし multi-asset に戻す場合は core/satellite に戻し、max_positions も見直すこと。
+# -----------------------------------------------------------------------------
+symbols:
+  core:
+    - BTC_JPY
+  satellite: []
+
+# -----------------------------------------------------------------------------
+# ポジション・資金配分の上限
+#   max_watch        : 監視銘柄数の上限
+#   max_positions    : 同時保有数の上限
+#   min_cash_ratio   : 新規買い後もこの比率を下回ってはいけない
+#   max_core_ratio   : 1 core 銘柄あたりの総資産比率上限
+#   max_sat_ratio    : 1 satellite 銘柄あたりの総資産比率上限
+# -----------------------------------------------------------------------------
+limits:
+  max_watch: 5
+  max_positions: 1           # BTC 単独のため
+  min_cash_ratio: 0.20
+  max_core_ratio: 0.35
+  max_sat_ratio: 0.25
+
+# -----------------------------------------------------------------------------
+# ループ間隔
+#   watch_interval_sec : 市場監視（価格・板）取得周期
+#   score_interval_sec : スコア更新周期（watch より長い）
+#   max_orders_per_cycle : 1サイクル（= 1 score 更新）で出す新規注文の上限
+# -----------------------------------------------------------------------------
+loop:
+  watch_interval_sec: 300      # 5分
+  score_interval_sec: 300      # 5分（CHAMPION: 5min 足判定）
+  max_orders_per_cycle: 1      # BTC 単独・同時保有 1
+
+# -----------------------------------------------------------------------------
+# スコアしきい値
+#   scorer.score(...) が銘柄ごとに返す以下のスコアを risk_guard が評価する:
+#     - total     : 総合スコア
+#     - trend     : トレンドの強さ
+#     - liquidity : 流動性
+#     - heat      : 過熱感（+ で過熱、- で冷却）
+#     - dup_penalty : 同種銘柄保有による重複ペナルティ（負値）
+#
+#   buy_candidate      : 最低限これを満たした銘柄のみ買い候補にする
+#   strong_buy         : さらに上の閾値。こちらを満たす場合は優先度を上げる
+#   dup_penalty_block  : これ以下の場合は基本見送り（重複保有回避）
+# -----------------------------------------------------------------------------
+scorer:
+  ai_enabled: true
+  ai_weight: 0.3
+  rule_weight: 0.7
+  base_score: 60.0
+
+  # サブスコア内訳（定数を全部ここで調整する）
+  trend:
+    short_ma: 5
+    long_ma: 20
+    ratio_clamp: 0.05       # この比率を ±30 へ線形マップ
+    max_magnitude: 30.0
+
+  liquidity:
+    window: 10
+    volume_divisor: 5.0     # 出来高平均を this で割って 0〜max_score
+    max_score: 20.0
+
+  heat:
+    window: 5
+    up_threshold_pct: 5.0   # 5本変化がこれを超えると過熱扱い
+    down_threshold_pct: 5.0
+    up_scale_pct: 10.0      # この変化率で満額ペナルティ
+    down_scale_pct: 10.0
+    up_max_penalty: 20.0
+    down_max_penalty: 10.0
+    neutral_bonus: 5.0
+
+  dup_penalty:
+    same_symbol: -15.0
+    same_group: -5.0
+
+  thresholds:
+    # CHAMPION: trend>=5 を中心に、BTC 単独のため liquidity 閾値は 0（無効化）
+    buy_candidate:
+      total: 70
+      trend: 5
+      liquidity: 0
+      heat: -8
+    strong_buy:
+      total: 78
+      trend: 10
+      liquidity: 5
+      heat: -5
+    dup_penalty_block: -8
+
+  # --- 追加の仮実装要素（観察フェーズで調整） ---------------------------
+  # Volatility: 直近N本のリターン std(%) が大きいほど減点（安全寄り）
+  volatility:
+    window: 20
+    low_threshold_pct: 1.0   # これ以下は減点なし
+    high_threshold_pct: 5.0  # これ以上で満額減点
+    max_penalty: 10.0
+
+  # Spread: liquidity からスプレッド幅に応じて減点
+  spread:
+    tight_threshold_pct: 0.05
+    wide_threshold_pct: 0.5
+    max_penalty: 10.0
+
+  # RSI: heat に加えるアジャスト。過熱は減点、冷却は小さなボーナス
+  rsi:
+    period: 14
+    overbought: 75
+    oversold: 25
+    max_overbought_penalty: 5.0
+    max_oversold_bonus: 3.0
+
+  # Cash bonus: 現金余力が十分なら全銘柄に小さな加点（ポートフォリオ側後付け）
+  cash_bonus:
+    high_threshold: 0.5   # 現金比率 50% 以上
+    mid_threshold: 0.3    # 30% 以上
+    high_bonus: 5.0
+    mid_bonus: 2.0
+
+# -----------------------------------------------------------------------------
+# エグジット（CHAMPION: TP+3.5 / SL-2.0 / cooldown=0）
+#   stop_loss_pct   : 建値からこの %下落で損切り候補
+#   take_profit_pct : 建値からこの %上昇で利確候補
+#   cooldown_min    : 同一銘柄の再エントリーまでのクールダウン（0 = 即時再エントリー可）
+# -----------------------------------------------------------------------------
+exits:
+  stop_loss_pct: -2.0
+  take_profit_pct: 3.5
+  cooldown_min: 0
+
+# -----------------------------------------------------------------------------
+# リスクガード
+#   halt_on_error           : 連続エラー時に HALT する
+#   halt_on_price_gap_pct   : 直近価格との乖離がこの % を超えたら HALT
+#   max_consecutive_errors  : HALT までの連続エラー許容数
+#   per_trade_jpy_max       : 1発注あたりの最大 JPY（dry-run 時も参考値）
+#   block_buy_below_cash_ratio : 現金比率がこの値未満なら新規買い禁止
+#   stop_file               : このファイルが存在する間は新規注文を停止
+#   auto_resume             : HALT 後の自動再開を許すか（false 推奨）
+# -----------------------------------------------------------------------------
+risk:
+  halt_on_error: true
+  halt_on_price_gap_pct: 10.0
+  max_consecutive_errors: 5
+  per_trade_jpy_max: 10000
+  block_buy_below_cash_ratio: 0.20
+  stop_file: ./STOP
+  auto_resume: false
+
+# -----------------------------------------------------------------------------
+# ポートフォリオ（dry-run 用の擬似ポートフォリオ）
+# -----------------------------------------------------------------------------
+portfolio:
+  # dry-run 時の仮想初期資金。live 実装時は残高 API から取得する。
+  initial_cash_jpy: 1000000
+
+# -----------------------------------------------------------------------------
+# 通知
+# -----------------------------------------------------------------------------
+notifier:
+  enabled: false
+  on_halt: true
+  on_order: true
+  on_error: true
+
+# -----------------------------------------------------------------------------
+# ログ
+# -----------------------------------------------------------------------------
+logging:
+  level: INFO
+  dir: ./logs
+  backup_count: 14   # 日次ローテートの保持世代数

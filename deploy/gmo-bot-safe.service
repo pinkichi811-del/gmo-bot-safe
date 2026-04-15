@@ -1,0 +1,28 @@
+[Unit]
+Description=gmo-bot-safe (dry-run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=USER
+Group=USER
+WorkingDirectory=/home/USER/gmo-bot-safe
+EnvironmentFile=/home/USER/gmo-bot-safe/.env
+Environment=RUN_MODE=dry_run
+ExecStart=/home/USER/gmo-bot-safe/.venv/bin/python src/main.py
+Restart=on-failure
+RestartSec=30
+
+# HALT（ロジック停止）ではプロセスは生きたままなので Restart 対象にならない。
+# これは意図通り（HALT 後の自動再開はしない設計）。
+
+# セキュリティ最小化（systemd 249+）
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/USER/gmo-bot-safe/data /home/USER/gmo-bot-safe/logs
+
+[Install]
+WantedBy=multi-user.target

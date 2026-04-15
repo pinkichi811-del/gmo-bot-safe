@@ -1,0 +1,123 @@
+# =============================================================================
+# AGGRESSIVE CHAMPION: BTC+ETH mp=2 + NDX trend filter (2026-04-15, trial 4988)
+# -----------------------------------------------------------------------------
+# 10K-trial 多銘柄探索の複利倍率最高候補。
+# 複利運用 10K → 37,558 円 (3.76×) / DD 20.3%
+#
+# 期間別 (2022-01 〜 2026-03, fee 0.05% 込み):
+#   train_extra: PF 1.50
+#   train:       PF 1.44
+#   val:         PF 1.47
+#   final:       PF 1.78
+#   trades total: 299
+#
+# 複利 10K 円運用: 37,558 円 (3.76×), DD 20.3%
+#
+# 特徴:
+#   - max_positions=2 で BTC・ETH 両方を同時保有可
+#   - 短期 ma_short=7, 長期 ma_long=44
+#   - trailing stop (3%) + 24h max hold + 3h cooldown
+#   - NDX 5/10 が唯一の regime filter (us_hours 等は使わない)
+# =============================================================================
+
+exchange: gmo_coin
+market: spot
+mode: dry_run
+
+symbols:
+  core: [BTC_JPY, ETH_JPY]
+  satellite: []
+
+limits:
+  max_watch: 5
+  max_positions: 2          # BTC と ETH を同時保有可
+  min_cash_ratio: 0.20
+  max_core_ratio: 0.50
+  max_sat_ratio: 0.25
+
+loop:
+  watch_interval_sec: 300
+  score_interval_sec: 300
+  max_orders_per_cycle: 1
+
+scorer:
+  ai_enabled: true
+  ai_weight: 0.3
+  rule_weight: 0.7
+  base_score: 60.0
+
+  trend:
+    short_ma: 7
+    long_ma: 44
+    ratio_clamp: 0.05
+    max_magnitude: 30.0
+
+  liquidity:
+    window: 10
+    volume_divisor: 5.0
+    max_score: 20.0
+
+  heat:
+    window: 5
+    up_threshold_pct: 5.0
+    down_threshold_pct: 5.0
+    up_scale_pct: 10.0
+    down_scale_pct: 10.0
+    up_max_penalty: 20.0
+    down_max_penalty: 10.0
+    neutral_bonus: 5.0
+
+  dup_penalty:
+    same_symbol: -15.0
+    same_group: -5.0
+
+  thresholds:
+    buy_candidate:
+      total: 70
+      trend: 9
+      liquidity: 0
+      heat: -8
+    strong_buy:
+      total: 78
+      trend: 14
+      liquidity: 5
+      heat: -5
+    dup_penalty_block: -8
+
+exits:
+  stop_loss_pct: -3.0
+  take_profit_pct: 6.0
+  trail_pct: 3.0              # ← 未実装
+  max_hold_bars: 288          # ← 未実装
+  cooldown_min: 180
+
+regime_filter:
+  enabled: true
+  ndx_trend:
+    enabled: true
+    csv_path: ./data/market/NDX_d.csv
+    ma_short: 5
+    ma_long: 10
+
+risk:
+  halt_on_error: true
+  halt_on_price_gap_pct: 10.0
+  max_consecutive_errors: 5
+  per_trade_jpy_max: 10000
+  block_buy_below_cash_ratio: 0.20
+  stop_file: ./STOP
+  auto_resume: false
+
+portfolio:
+  initial_cash_jpy: 1000000
+
+notifier:
+  enabled: false
+  on_halt: true
+  on_order: true
+  on_error: true
+
+logging:
+  level: INFO
+  dir: ./logs
+  backup_count: 14

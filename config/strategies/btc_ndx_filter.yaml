@@ -1,0 +1,153 @@
+# =============================================================================
+# 新候補: BTC 単独 + ndx_trend フィルター (2026-04-14 PDCA セッション)
+# -----------------------------------------------------------------------------
+# 4 期間（4 年超）すべてで PF >= 1.26 を達成した唯一の設定。
+#
+# 4 期間成績（fee 0.05% 込み、per_trade=10K JPY）:
+#   train_extra 2022-01..2023-12:  103 trades  net +0.346%  PF 1.26  DD 0.18%
+#   train       2024-01..2025-06:   98 trades  net +0.610%  PF 1.53  DD 0.15%
+#   val         2025-07..2025-12:   17 trades  net +0.082%  PF 1.41  DD 0.12%
+#   final       2026-01..2026-03:   11 trades  net +0.043%  PF 1.31  DD 0.06%
+#
+# 月別: 全 49 ヶ月中 25 ヶ月プラス (51%)、最大 streak 8。
+#
+# 旧 champion との比較:
+#   `5min trend>=5 ma=5/20`(現 app.yaml) のうち BTC 単独運用に
+#   ndx_trend filter を追加した版。trades は半減するが PF が大幅改善。
+#
+# 必要追加要素:
+#   - data/market/NDX_d.csv （日次更新が必要、Yahoo Finance v8 chart API）
+#   - src/regime_filter.py を import して filter 適用
+#   - 現 src/main.py には NDX フィルター呼び出しが未実装
+#     → filter 統合は別 PR で実装する（live 時に必須）
+#
+# 運用の注意:
+#   - NDX 取得失敗時は filter 非適用にフォールバック（破綻リスク回避）
+#   - 米国祝日で NDX 更新無しの日がある（前日値で代用）
+# =============================================================================
+
+exchange: gmo_coin
+market: spot
+mode: dry_run
+
+symbols:
+  core: [BTC_JPY]
+  satellite: []
+
+limits:
+  max_watch: 5
+  max_positions: 1
+  min_cash_ratio: 0.20
+  max_core_ratio: 0.35
+  max_sat_ratio: 0.25
+
+loop:
+  watch_interval_sec: 300
+  score_interval_sec: 300
+  max_orders_per_cycle: 1
+
+scorer:
+  ai_enabled: true
+  ai_weight: 0.3
+  rule_weight: 0.7
+  base_score: 60.0
+
+  trend:
+    short_ma: 5
+    long_ma: 20
+    ratio_clamp: 0.05
+    max_magnitude: 30.0
+
+  liquidity:
+    window: 10
+    volume_divisor: 5.0
+    max_score: 20.0
+
+  heat:
+    window: 5
+    up_threshold_pct: 5.0
+    down_threshold_pct: 5.0
+    up_scale_pct: 10.0
+    down_scale_pct: 10.0
+    up_max_penalty: 20.0
+    down_max_penalty: 10.0
+    neutral_bonus: 5.0
+
+  dup_penalty:
+    same_symbol: -15.0
+    same_group: -5.0
+
+  thresholds:
+    buy_candidate:
+      total: 70
+      trend: 5
+      liquidity: 0
+      heat: -8
+    strong_buy:
+      total: 78
+      trend: 10
+      liquidity: 5
+      heat: -5
+    dup_penalty_block: -8
+
+  volatility:
+    window: 20
+    low_threshold_pct: 1.0
+    high_threshold_pct: 5.0
+    max_penalty: 10.0
+
+  spread:
+    tight_threshold_pct: 0.05
+    wide_threshold_pct: 0.5
+    max_penalty: 10.0
+
+  rsi:
+    period: 14
+    overbought: 75
+    oversold: 25
+    max_overbought_penalty: 5.0
+    max_oversold_bonus: 3.0
+
+  cash_bonus:
+    high_threshold: 0.5
+    mid_threshold: 0.3
+    high_bonus: 5.0
+    mid_bonus: 2.0
+
+# 追加レイヤー: regime filter
+regime_filter:
+  enabled: true
+  ndx_trend:
+    enabled: true
+    csv_path: ./data/market/NDX_d.csv
+    ma_short: 5
+    ma_long: 20
+    on_data_missing: pass   # NDX 取得失敗時は filter 非適用
+
+exits:
+  stop_loss_pct: -2.0
+  take_profit_pct: 3.5
+  cooldown_min: 0
+
+risk:
+  halt_on_error: true
+  halt_on_price_gap_pct: 10.0
+  max_consecutive_errors: 5
+  per_trade_jpy_max: 10000
+  block_buy_below_cash_ratio: 0.20
+  stop_file: ./STOP
+  auto_resume: false
+
+portfolio:
+  initial_cash_jpy: 1000000
+
+notifier:
+  enabled: false
+  on_halt: true
+  on_order: true
+  on_error: true
+
+logging:
+  level: INFO
+  dir: ./logs
+  backup_count: 14

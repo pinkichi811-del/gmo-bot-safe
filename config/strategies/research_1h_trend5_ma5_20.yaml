@@ -1,0 +1,136 @@
+# =============================================================================
+# 研究用: 1H 足版 trend>=5 ma=5/20（BTC 単独・並走比較候補）
+# -----------------------------------------------------------------------------
+# 5min champion との比較で保存。live 運用はしない前提で、バックテスト/比較用。
+#
+# 成績（fee 0.05% 込み）:
+#   train 2024-01..2025-06: 189 trades, +0.54%, PF 1.21, DD 0.46%
+#   val   2025-07..2025-12:  40 trades, -0.18%, PF 0.75, DD 0.32%
+#   final 2026-01..2026-03:  25 trades, +0.01%, PF 1.02, DD 0.13%
+#
+# 5min champion との差分:
+#   loop.score_interval_sec: 300 (5min)  → 3600 (1H)
+#   MA の "5/20" は時間足ごとに意味が違うので同じ数値でも別挙動になる。
+#   (5 本 × 1H = 5 時間, 20 本 × 1H = 20 時間)
+#
+# 運用上の扱い:
+#   - 現状 live では使わない
+#   - バックテスト or 別インスタンスの比較観察にのみ利用
+#   - 使う時は CONFIG_PATH=./config/strategies/research_1h_trend5_ma5_20.yaml で起動
+# =============================================================================
+
+exchange: gmo_coin
+market: spot
+mode: dry_run
+
+symbols:
+  core: [BTC_JPY]
+  satellite: []
+
+limits:
+  max_watch: 5
+  max_positions: 1
+  min_cash_ratio: 0.20
+  max_core_ratio: 0.35
+  max_sat_ratio: 0.25
+
+loop:
+  watch_interval_sec: 3600     # 1H
+  score_interval_sec: 3600     # 1H 判定
+  max_orders_per_cycle: 1
+
+scorer:
+  ai_enabled: true
+  ai_weight: 0.3
+  rule_weight: 0.7
+  base_score: 60.0
+
+  trend:
+    short_ma: 5
+    long_ma: 20
+    ratio_clamp: 0.05
+    max_magnitude: 30.0
+
+  liquidity:
+    window: 10
+    volume_divisor: 5.0
+    max_score: 20.0
+
+  heat:
+    window: 5
+    up_threshold_pct: 5.0
+    down_threshold_pct: 5.0
+    up_scale_pct: 10.0
+    down_scale_pct: 10.0
+    up_max_penalty: 20.0
+    down_max_penalty: 10.0
+    neutral_bonus: 5.0
+
+  dup_penalty:
+    same_symbol: -15.0
+    same_group: -5.0
+
+  thresholds:
+    buy_candidate:
+      total: 70
+      trend: 5
+      liquidity: 0
+      heat: -8
+    strong_buy:
+      total: 78
+      trend: 10
+      liquidity: 5
+      heat: -5
+    dup_penalty_block: -8
+
+  volatility:
+    window: 20
+    low_threshold_pct: 1.0
+    high_threshold_pct: 5.0
+    max_penalty: 10.0
+
+  spread:
+    tight_threshold_pct: 0.05
+    wide_threshold_pct: 0.5
+    max_penalty: 10.0
+
+  rsi:
+    period: 14
+    overbought: 75
+    oversold: 25
+    max_overbought_penalty: 5.0
+    max_oversold_bonus: 3.0
+
+  cash_bonus:
+    high_threshold: 0.5
+    mid_threshold: 0.3
+    high_bonus: 5.0
+    mid_bonus: 2.0
+
+exits:
+  stop_loss_pct: -2.0
+  take_profit_pct: 3.5
+  cooldown_min: 0
+
+risk:
+  halt_on_error: true
+  halt_on_price_gap_pct: 10.0
+  max_consecutive_errors: 5
+  per_trade_jpy_max: 10000
+  block_buy_below_cash_ratio: 0.20
+  stop_file: ./STOP
+  auto_resume: false
+
+portfolio:
+  initial_cash_jpy: 1000000
+
+notifier:
+  enabled: false
+  on_halt: true
+  on_order: true
+  on_error: true
+
+logging:
+  level: INFO
+  dir: ./logs
+  backup_count: 14

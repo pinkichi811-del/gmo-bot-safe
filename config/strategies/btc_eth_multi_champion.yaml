@@ -1,0 +1,141 @@
+# =============================================================================
+# NEW CHAMPION: BTC+ETH 多銘柄 + 多層 filter (2026-04-15 多銘柄探索セッション)
+# -----------------------------------------------------------------------------
+# 2850 trial 探索で見つけた 10K 円 → 33,156 円 (3.32×, DD 25%) の構成。
+# 4 年 3 ヶ月 (2022-01 〜 2026-03) 実測複利運用結果。
+#
+# 期間別複利:
+#   train_extra 2022-01〜2023-12: PF 1.25 / net ... / DD 0.29% (BT 内部)
+#   train       2024-01〜2025-06: PF 1.31 / DD 0.29%
+#   val         2025-07〜2025-12: PF 1.44 / DD 0.29%
+#   final       2026-01〜2026-03: PF 1.48 / DD 0.29%
+#   trades total: 355
+#
+# 複利 10K 円運用:
+#   終値 33,156 円 (3.32×)
+#   最大 DD (複利ベース) 25.3%
+#
+# 旧 BTC-only champion (trial 843, 2.74×) との比較:
+#   倍率 +21%、DD -29% 改善
+#
+# ⚠️ 注意: この YAML を dry-run/live で動かすには src/ 側に実装が必要:
+#   1. ETH_JPY の price feed 対応 (market_watcher.py)
+#   2. regime_filter 呼び出し統合 (spx_trend / vix / us_hours / events)
+#   3. trail_pct 実装 (exit 判定に追加)
+#   4. multi-symbol portfolio 管理
+#   全て未実装。このファイルは現時点で「設計メモ + 将来実装の仕様書」扱い。
+#
+# Dry-run で並走させる場合は、src/main.py::run_cycle のリファクタが必要。
+# =============================================================================
+
+exchange: gmo_coin
+market: spot
+mode: dry_run
+
+symbols:
+  core: [BTC_JPY, ETH_JPY]
+  satellite: []
+
+limits:
+  max_watch: 5
+  max_positions: 1          # 多銘柄だが同時保有 1 本
+  min_cash_ratio: 0.20
+  max_core_ratio: 0.50
+  max_sat_ratio: 0.25
+
+loop:
+  watch_interval_sec: 300
+  score_interval_sec: 300
+  max_orders_per_cycle: 1
+
+scorer:
+  ai_enabled: true
+  ai_weight: 0.3
+  rule_weight: 0.7
+  base_score: 60.0
+
+  trend:
+    short_ma: 5
+    long_ma: 29
+    ratio_clamp: 0.05
+    max_magnitude: 30.0
+
+  liquidity:
+    window: 10
+    volume_divisor: 5.0
+    max_score: 20.0
+
+  heat:
+    window: 5
+    up_threshold_pct: 5.0
+    down_threshold_pct: 5.0
+    up_scale_pct: 10.0
+    down_scale_pct: 10.0
+    up_max_penalty: 20.0
+    down_max_penalty: 10.0
+    neutral_bonus: 5.0
+
+  dup_penalty:
+    same_symbol: -15.0
+    same_group: -5.0
+
+  thresholds:
+    buy_candidate:
+      total: 70
+      trend: 3              # 低閾値 (entry 拾いやすく)
+      liquidity: 0
+      heat: -8
+    strong_buy:
+      total: 78
+      trend: 8
+      liquidity: 5
+      heat: -5
+    dup_penalty_block: -8
+
+exits:
+  stop_loss_pct: -3.5
+  take_profit_pct: 5.0
+  trail_pct: 3.0              # ← 未実装
+  max_hold_bars: 0            # 無制限
+  cooldown_min: 60
+
+# 多層 regime filter
+regime_filter:
+  enabled: true
+  spx_trend:
+    enabled: true
+    csv_path: ./data/market/SPX_d.csv
+    ma_short: 5
+    ma_long: 10
+  vix_ceiling:
+    enabled: true
+    csv_path: ./data/market/VIX_d.csv
+    max_vix: 25.0
+  us_hours:
+    enabled: true             # UTC 14:30-21:00 のみ許可
+  events_avoid:
+    enabled: true
+    window_min: 60            # FOMC/NFP/CPI/PPI 前後 60 分拒否
+
+risk:
+  halt_on_error: true
+  halt_on_price_gap_pct: 10.0
+  max_consecutive_errors: 5
+  per_trade_jpy_max: 10000
+  block_buy_below_cash_ratio: 0.20
+  stop_file: ./STOP
+  auto_resume: false
+
+portfolio:
+  initial_cash_jpy: 1000000
+
+notifier:
+  enabled: false
+  on_halt: true
+  on_order: true
+  on_error: true
+
+logging:
+  level: INFO
+  dir: ./logs
+  backup_count: 14
