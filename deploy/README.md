@@ -1,6 +1,30 @@
 # deploy/
 
-VPS 配置用の雛形。USER 部分は実アカウント名に置換すること。
+VPS 配置用の雛形とスクリプト。
+
+## 🚀 Oracle Cloud Always Free で動かす場合
+
+**最短手順は [`SETUP_ORACLE.md`](./SETUP_ORACLE.md) 参照。**
+
+- VPS に SSH 接続後、以下1コマンドで全自動セットアップ:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/pinkichi811-del/gmo-bot-safe/master/deploy/bootstrap.sh | bash
+  ```
+
+## ファイル一覧
+
+| ファイル | 用途 |
+| --- | --- |
+| `SETUP_ORACLE.md` | Oracle Cloud 側の手動手順（アカウント作成〜VM作成〜SSH接続） |
+| `bootstrap.sh` | VPS 初回セットアップ（clone / venv / systemd / logrotate 全自動） |
+| `update.sh` | 更新（`git pull` + `systemctl restart`） |
+| `status.sh` | 稼働状況まとめ（systemd / STOP / ログ / state.json） |
+| `gmo-bot-safe.service` | systemd ユニットファイル（`bootstrap.sh` が USER を置換して展開） |
+| `logrotate.conf` | logrotate 設定（同上） |
+
+## 手動セットアップ（bootstrap.sh を使わない場合）
+
+USER 部分は実アカウント名に置換すること。
 
 ## systemd
 
