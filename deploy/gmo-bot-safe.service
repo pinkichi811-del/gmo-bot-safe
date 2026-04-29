@@ -9,8 +9,6 @@ User=USER
 Group=USER
 WorkingDirectory=/home/USER/gmo-bot-safe
 EnvironmentFile=/home/USER/gmo-bot-safe/.env
-Environment=RUN_MODE=dry_run
-Environment=CONFIG_PATH=config/strategies/btc_eth_balanced_ndx.yaml
 ExecStart=/home/USER/gmo-bot-safe/.venv/bin/python src/main.py
 Restart=on-failure
 RestartSec=30
