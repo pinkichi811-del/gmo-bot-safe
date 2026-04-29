@@ -3,6 +3,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# python 実行コマンドを解決（Windows の Git Bash 等で python が無い環境向け）
+if command -v python >/dev/null 2>&1; then
+  PY=python
+elif command -v python3 >/dev/null 2>&1; then
+  PY=python3
+elif command -v py >/dev/null 2>&1; then
+  PY=py
+else
+  echo "ERROR: python が見つかりません (python / python3 / py のいずれもPATHにない)"
+  exit 1
+fi
+
 echo "=== gmo-bot-safe status ==="
 
 # STOP
@@ -23,7 +35,7 @@ echo "gate3 _send_live_order: NotImplementedError (実装未着手)"
 
 # state.json
 if [ -f data/state.json ]; then
-  python - <<'PY'
+  "$PY" - <<'PY'
 import json, time
 with open("data/state.json", encoding="utf-8") as f:
     s = json.load(f)
@@ -52,7 +64,7 @@ if [ -f data/dry_run_orders.csv ]; then
 fi
 
 # 今日のサイクル数
-today=$(python -c "from datetime import datetime, timezone; print(datetime.now(timezone.utc).date().isoformat())")
+today=$("$PY" -c "from datetime import datetime, timezone; print(datetime.now(timezone.utc).date().isoformat())")
 log_file="data/score_log/${today}.jsonl"
 if [ -f "${log_file}" ]; then
   n=$(wc -l < "${log_file}" | tr -d ' ')
