@@ -15,6 +15,16 @@
 
 > 旧記述では 2026-05-04 を開始日としていたが、PC スリープ問題で Oracle Cloud に
 > 基盤を移したため、観察開始は VM 上で起動した日にリセットする (2026-05-06 修正)。
+>
+> **追記 2026-05-06 11:14 UTC**: VM (instance-20260419-1810) は 2026-04-29 から既に
+> balanced_ndx で稼働していたが、`data/market/NDX_d.csv` が 2026-03-31 で止まって
+> いたため 7 日連続で `regime_blocked:ndx_trend` (cycles=417, 100% block) となり
+> 評価不能データだった。NDX を 2026-05-05 まで更新 + systemd unit を primary +
+> compare-old に分割 + `fetch-index-daily.timer` を毎日 22:00 UTC に enable した
+> 上で 2026-05-06 11:13 UTC に両サービスを再起動し、初サイクルで NDX trend が
+> ALLOW BUY に変わって ETH_JPY を STRONG BUY (price 540829.32, total=98.8) で
+> 約定。**観察 Day 1 を 2026-05-06、進行判断 Day 14 を 2026-05-20** とする。
+> 既存 (4/29-5/5) のデータは保持しつつ、集計は `--days N` で 5/6 起算に切り換える。
 
 ---
 
