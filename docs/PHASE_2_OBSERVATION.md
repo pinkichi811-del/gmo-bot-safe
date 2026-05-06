@@ -7,9 +7,14 @@
 
 ## 観察期間
 
-- **開始日**: 2026-05-04 (UTC)
+- **開始日**: Oracle Cloud 上で `systemctl start gmo-bot-safe-primary gmo-bot-safe-compare-old` した日 (UTC)
 - **最低期間**: 14 日 (ROADMAP.md Phase 2 規定)
-- **終了予定**: 2026-05-18 (UTC) 以降で進行判断
+- **終了予定**: 開始日 + 14 日以降で進行判断
+- **稼働基盤**: Oracle Cloud Always Free Linux VM + systemd ([ORACLE_CLOUD_SETUP.md](ORACLE_CLOUD_SETUP.md))
+- **NDX 更新**: `fetch-index-daily.timer` が毎日 22:00 UTC に [scripts/fetch_index_daily.py](../scripts/fetch_index_daily.py) を発火、Yahoo Finance v8 chart API から NDX/SPX/VIX を更新
+
+> 旧記述では 2026-05-04 を開始日としていたが、PC スリープ問題で Oracle Cloud に
+> 基盤を移したため、観察開始は VM 上で起動した日にリセットする (2026-05-06 修正)。
 
 ---
 
@@ -28,12 +33,21 @@
 - STATE_DIR: `./data/compare_old`
 - LOG_DIR: `./logs/compare_old`
 
-### 起動コマンド
+### 起動コマンド (本番 = Oracle Cloud)
+```bash
+sudo systemctl enable --now gmo-bot-safe-primary.service
+sudo systemctl enable --now gmo-bot-safe-compare-old.service
+sudo systemctl enable --now fetch-index-daily.timer
+```
+詳細は [ORACLE_CLOUD_SETUP.md](ORACLE_CLOUD_SETUP.md) Step 7-8 参照。
+
+### 起動コマンド (ローカル動作確認のみ)
 ```bash
 bash scripts/dry_run_compare.sh
 ```
 
-両プロセスを別 STATE_DIR で同時起動する。Ctrl+C で両方停止。
+両プロセスを別 STATE_DIR で同時起動する。Ctrl+C で両方停止。長期観察には PC スリープが
+障害になるため使わない (Oracle Cloud に移行する経緯参照)。
 
 ---
 

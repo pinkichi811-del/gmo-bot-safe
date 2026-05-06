@@ -1,0 +1,30 @@
+[Unit]
+Description=gmo-bot-safe compare-old (5min trend>=5 ma=5/20, BTC single, dry-run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=USER
+Group=USER
+WorkingDirectory=/home/USER/gmo-bot-safe
+EnvironmentFile=/home/USER/gmo-bot-safe/.env
+Environment=CONFIG_PATH=./config/app.yaml
+Environment=STATE_DIR=./data/compare_old
+Environment=LOG_DIR=./logs/compare_old
+ExecStart=/home/USER/gmo-bot-safe/.venv/bin/python src/main.py
+Restart=on-failure
+RestartSec=30
+
+# HALT（ロジック停止）ではプロセスは生きたままなので Restart 対象にならない。
+# これは意図通り（HALT 後の自動再開はしない設計）。
+
+# セキュリティ最小化（systemd 249+）
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/USER/gmo-bot-safe/data/compare_old /home/USER/gmo-bot-safe/logs/compare_old
+
+[Install]
+WantedBy=multi-user.target

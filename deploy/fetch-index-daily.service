@@ -1,0 +1,21 @@
+[Unit]
+Description=Refresh NDX/SPX/VIX daily CSV from Yahoo Finance (regime filter input)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=USER
+Group=USER
+WorkingDirectory=/home/USER/gmo-bot-safe
+ExecStart=/home/USER/gmo-bot-safe/.venv/bin/python scripts/fetch_index_daily.py --indices NDX,SPX,VIX
+
+# セキュリティ最小化（systemd 249+）。CSV 書き込みのみ許可。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/USER/gmo-bot-safe/data/market
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=Trigger daily refresh of NDX/SPX/VIX CSV at 22:00 UTC
+Requires=fetch-index-daily.service
+
+[Timer]
+# NDX market close は EDT 期間 20:00 UTC、EST 期間 21:00 UTC。
+# 22:00 UTC ならどちらでも収場後で確実に当日 confirmed bar が取れる。
+OnCalendar=*-*-* 22:00:00 UTC
+# システム停止中に missed run があれば次の起動時に補完する
+Persistent=true
+Unit=fetch-index-daily.service
+
+[Install]
+WantedBy=timers.target

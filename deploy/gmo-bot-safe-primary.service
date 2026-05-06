@@ -1,5 +1,5 @@
 [Unit]
-Description=gmo-bot-safe (dry-run)
+Description=gmo-bot-safe primary (balanced_ndx champion, BTC+ETH + NDX trend filter, dry-run)
 After=network-online.target
 Wants=network-online.target
 
@@ -9,6 +9,9 @@ User=USER
 Group=USER
 WorkingDirectory=/home/USER/gmo-bot-safe
 EnvironmentFile=/home/USER/gmo-bot-safe/.env
+Environment=CONFIG_PATH=./config/strategies/btc_eth_balanced_ndx.yaml
+Environment=STATE_DIR=./data
+Environment=LOG_DIR=./logs
 ExecStart=/home/USER/gmo-bot-safe/.venv/bin/python src/main.py
 Restart=on-failure
 RestartSec=30
