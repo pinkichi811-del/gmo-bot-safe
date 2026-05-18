@@ -35,24 +35,39 @@ BASE_CFG: dict = {
             "BTC_JPY": 4,
             "ETH_JPY": 2,
         },
+        # ポーリング・retry はテストで無音動作させる
+        "executions_poll": {
+            "max_attempts": 3,
+            "interval_sec": 0.0,
+        },
     },
 }
 
 
 class _FakeOrderClient:
-    """GmoOrderClient の差し替え用 fake。`place_market_order` を記録 + 任意レスポンス。"""
+    """GmoOrderClient の差し替え用 fake。
+
+    - `place_market_order`: 引数を記録 + 任意レスポンス
+    - `get_executions_by_order_id`: 引数を記録 + 任意レスポンス (sequence で異なる
+      応答を返せる)。`executions_responses` を渡さない場合は「直前の place_market_order
+      の size と同じ executedSize で完全約定した」レスポンスをデフォルトで返す。
+    """
 
     def __init__(
         self,
         response: dict | None = None,
         raise_exc: Exception | None = None,
+        executions_responses: list | None = None,
     ) -> None:
         self.calls: list[dict] = []
+        self.executions_calls: list[str] = []
         self._response = response or {
             "order_id": "FAKE_999",
             "raw": {"status": 0, "data": "FAKE_999"},
         }
         self._raise_exc = raise_exc
+        self._executions_responses = executions_responses
+        self._executions_idx = 0
 
     def place_market_order(
         self,
@@ -70,6 +85,27 @@ class _FakeOrderClient:
         if self._raise_exc:
             raise self._raise_exc
         return self._response
+
+    def get_executions_by_order_id(self, order_id: str) -> dict:
+        self.executions_calls.append(order_id)
+        if self._executions_responses is not None:
+            resp = self._executions_responses[
+                min(self._executions_idx, len(self._executions_responses) - 1)
+            ]
+            self._executions_idx += 1
+            if isinstance(resp, Exception):
+                raise resp
+            return resp
+        # デフォルト: 直近の place_market_order の size と同じ executedSize で完全約定
+        last_size = self.calls[-1]["size_crypto"] if self.calls else 0.0
+        return {
+            "status": 0,
+            "data": [{
+                "orderId": order_id,
+                "executedSize": f"{last_size:.8f}",
+                "fee": "0",
+            }],
+        }
 
 
 def _decision(
@@ -155,8 +191,8 @@ class TestBelowMinSize(_LiveOrderTestBase):
         result = ex._send_live_order_impl(
             _decision(size_jpy=1500, price_ref=10_000_000),
         )
-        # 切り捨てで 0.0001 == min → 通過
-        self.assertEqual(result["status"], "sent")
+        # 切り捨てで 0.0001 == min → 通過、デフォルト fake は完全約定 → filled
+        self.assertEqual(result["status"], "filled")
         self.assertEqual(len(fake.calls), 1)
 
     def test_truncation_strictly_below_min_blocks(self) -> None:
@@ -191,7 +227,8 @@ class TestSendLiveOrderImplSuccess(_LiveOrderTestBase):
         fake = _FakeOrderClient()
         ex = OrderExecutor(BASE_CFG, mode="dry_run", order_client=fake)
         result = ex._send_live_order_impl(_decision())
-        self.assertEqual(result["status"], "sent")
+        # デフォルト fake は約定 size を返すので filled
+        self.assertEqual(result["status"], "filled")
         self.assertEqual(result["order_id"], "FAKE_999")
 
     def test_writes_jsonl_record_on_success(self) -> None:
@@ -202,13 +239,16 @@ class TestSendLiveOrderImplSuccess(_LiveOrderTestBase):
         )
         self.assertTrue(self.live_jsonl.exists())
         rec = json.loads(self.live_jsonl.read_text(encoding="utf-8").strip())
-        self.assertEqual(rec["status"], "sent")
+        self.assertEqual(rec["status"], "filled")
         self.assertEqual(rec["order_id"], "FAKE_999")
         self.assertEqual(rec["mode"], "live")
         self.assertEqual(rec["symbol"], "BTC_JPY")
         self.assertEqual(rec["side"], "buy")
         # size_crypto は config の size_decimals=4 で切り捨てた値
         self.assertAlmostEqual(rec["size_crypto"], 0.001, places=8)
+        # 約定数量と fee も記録される (Phase 4b)
+        self.assertAlmostEqual(rec["executed_size"], 0.001, places=8)
+        self.assertEqual(rec["fee"], 0.0)
 
 
 # ----------------------------------------------------------------------
@@ -255,6 +295,96 @@ class TestSendLiveOrderImplApiError(_LiveOrderTestBase):
         # payload 内部のキー名や値が記録に流れ込んでいないことを確認
         self.assertNotIn("internal_token_should_not_leak", rec_text)
         self.assertNotIn("abcdef", rec_text)
+
+
+# ----------------------------------------------------------------------
+# Phase 4b: executions ポーリングと約定判定
+# ----------------------------------------------------------------------
+class TestExecutionsPolling(_LiveOrderTestBase):
+    def test_partial_fill_detected(self) -> None:
+        """executedSize < ordered_size のまま max_attempts に到達 → partial_fill。"""
+        fake = _FakeOrderClient(
+            executions_responses=[
+                # 全 attempt で 0.0005 BTC しか約定していない (orderedSize=0.001)
+                {"status": 0, "data": [{
+                    "orderId": "FAKE_999",
+                    "executedSize": "0.0005",
+                    "fee": "1.5",
+                }]},
+            ],
+        )
+        ex = OrderExecutor(BASE_CFG, mode="dry_run", order_client=fake)
+        result = ex._send_live_order_impl(
+            _decision(size_jpy=10_000, price_ref=10_000_000),
+        )
+        self.assertEqual(result["status"], "partial_fill")
+        self.assertAlmostEqual(result["executed_size"], 0.0005, places=8)
+        # ポーリング 1 回目で既に 0.0005 がある → max_attempts まで回り続ける
+        # (完全約定にならないため break しない)
+        self.assertEqual(result["poll_attempts"], 3)
+
+    def test_not_filled_when_executions_empty(self) -> None:
+        """executions が空のまま max_attempts → not_filled。"""
+        fake = _FakeOrderClient(
+            executions_responses=[
+                {"status": 0, "data": []},
+            ],
+        )
+        ex = OrderExecutor(BASE_CFG, mode="dry_run", order_client=fake)
+        result = ex._send_live_order_impl(_decision())
+        self.assertEqual(result["status"], "not_filled")
+        self.assertEqual(result["executed_size"], 0.0)
+        self.assertEqual(result["poll_attempts"], 3)
+
+    def test_filled_after_polling_retries(self) -> None:
+        """初回 0 → 2 回目で完全約定 → filled、attempts=2 で break。"""
+        fake = _FakeOrderClient(
+            executions_responses=[
+                {"status": 0, "data": []},
+                {"status": 0, "data": [{
+                    "orderId": "FAKE_999",
+                    "executedSize": "0.001",
+                    "fee": "2.0",
+                }]},
+            ],
+        )
+        ex = OrderExecutor(BASE_CFG, mode="dry_run", order_client=fake)
+        result = ex._send_live_order_impl(_decision())
+        self.assertEqual(result["status"], "filled")
+        self.assertAlmostEqual(result["executed_size"], 0.001, places=8)
+        self.assertAlmostEqual(result["fee"], 2.0, places=8)
+        self.assertEqual(result["poll_attempts"], 2)
+
+    def test_executions_unknown_on_api_error(self) -> None:
+        """ポーリング全試行で API エラー → executions_unknown (判定不能、要手動確認)。"""
+        from gmo_api_client import GmoApiError
+        fake = _FakeOrderClient(
+            executions_responses=[
+                GmoApiError(status=500, message="server error"),
+            ],
+        )
+        ex = OrderExecutor(BASE_CFG, mode="dry_run", order_client=fake)
+        result = ex._send_live_order_impl(_decision())
+        self.assertEqual(result["status"], "executions_unknown")
+        self.assertEqual(result["executed_size"], 0.0)
+
+    def test_fee_is_summed_across_executions(self) -> None:
+        """複数 execution の fee は合計される。"""
+        fake = _FakeOrderClient(
+            executions_responses=[
+                {"status": 0, "data": [
+                    {"orderId": "FAKE_999", "executedSize": "0.0005", "fee": "1.0"},
+                    {"orderId": "FAKE_999", "executedSize": "0.0005", "fee": "1.5"},
+                ]},
+            ],
+        )
+        ex = OrderExecutor(BASE_CFG, mode="dry_run", order_client=fake)
+        result = ex._send_live_order_impl(
+            _decision(size_jpy=10_000, price_ref=10_000_000),
+        )
+        # 合計 executedSize=0.001 が ordered=0.001 と一致 → filled
+        self.assertEqual(result["status"], "filled")
+        self.assertAlmostEqual(result["fee"], 2.5, places=8)
 
 
 # ----------------------------------------------------------------------

@@ -176,6 +176,11 @@ risk:
 #   min_size_by_symbol : GMOコイン公式仕様の最小ロット（暗号資産数量）
 #   size_decimals      : GMO 受付の小数桁数（端数は切り捨てで丸める）
 #   いずれも 2026-05 時点の値。仕様変更があれば公式ドキュメントで確認のうえ更新する。
+#
+#   http_retry        : POST/GET の 429 / 5xx / URLError 時の指数バックオフ
+#                       4xx (auth, validation) は即失敗（retry しない）
+#   executions_poll   : POST 後に GET /v1/executions をポーリングして約定確認する設定
+#                       max_attempts × interval_sec が「最大待ち時間」
 # -----------------------------------------------------------------------------
 order:
   min_size_by_symbol:
@@ -190,6 +195,13 @@ order:
     SOL_JPY: 1
     XRP_JPY: 0
     DOGE_JPY: 0
+  http_retry:
+    max_attempts: 3
+    base_delay_sec: 1.0
+    max_delay_sec: 30.0
+  executions_poll:
+    max_attempts: 5
+    interval_sec: 2.0
 
 # -----------------------------------------------------------------------------
 # ポートフォリオ（dry-run 用の擬似ポートフォリオ）

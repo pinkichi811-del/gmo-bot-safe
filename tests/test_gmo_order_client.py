@@ -47,6 +47,8 @@ class _Recorder:
         if self._responses is not None:
             r = self._responses[self._idx]
             self._idx += 1
+            if isinstance(r, Exception):
+                raise r
             return r
         return self._response
 
@@ -308,6 +310,192 @@ class TestConstructor(unittest.TestCase):
     def test_none_credentials_raises(self) -> None:
         with self.assertRaises(ValueError):
             GmoOrderClient(None)  # type: ignore[arg-type]
+
+    def test_retry_max_attempts_zero_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            GmoOrderClient(_creds(), retry_max_attempts=0)
+
+
+# ----------------------------------------------------------------------
+# Phase 4b: retry / backoff
+# ----------------------------------------------------------------------
+class TestRetryBehavior(unittest.TestCase):
+    def _sleep_recorder(self) -> tuple[list[float], "Callable[[float], None]"]:
+        delays: list[float] = []
+        def sleep(d: float) -> None:
+            delays.append(d)
+        return delays, sleep
+
+    def test_5xx_then_success_retries_until_ok(self) -> None:
+        """500 を 2 回返してから 200 で成功 → 計 3 回呼ばれる。"""
+        delays, sleep = self._sleep_recorder()
+        rec = _Recorder(responses=[
+            _make_http_error(500),
+            _make_http_error(503),
+            b'{"status":0,"data":"ORDER_999"}',
+        ])
+        client = GmoOrderClient(
+            _creds(), http_fn=rec, clock_fn=lambda: 1700000000.0,
+            sleep_fn=sleep, retry_max_attempts=3,
+            retry_base_delay_sec=0.1, retry_max_delay_sec=10.0,
+        )
+        result = client.place_market_order("BTC_JPY", "BUY", 0.001, 4)
+        self.assertEqual(result["order_id"], "ORDER_999")
+        self.assertEqual(len(rec.requests), 3)
+        # 2 回 sleep される (3 試行 = 2 retry)
+        self.assertEqual(len(delays), 2)
+        # 指数バックオフ: 0.1, 0.2
+        self.assertAlmostEqual(delays[0], 0.1, places=5)
+        self.assertAlmostEqual(delays[1], 0.2, places=5)
+
+    def test_4xx_does_not_retry(self) -> None:
+        """400/401/403/404 は retry せず即 raise。"""
+        for code in (400, 401, 403, 404):
+            with self.subTest(code=code):
+                delays, sleep = self._sleep_recorder()
+                rec = _Recorder(raise_exc=_make_http_error(code))
+                client = GmoOrderClient(
+                    _creds(), http_fn=rec, sleep_fn=sleep,
+                    retry_max_attempts=3, retry_base_delay_sec=0.0,
+                )
+                with self.assertRaises(GmoApiError) as ctx:
+                    client.place_market_order("BTC_JPY", "BUY", 0.001, 4)
+                self.assertEqual(ctx.exception.status, code)
+                self.assertEqual(len(rec.requests), 1)
+                self.assertEqual(len(delays), 0)
+
+    def test_429_does_retry(self) -> None:
+        """429 (レート制限) は retry 対象。"""
+        delays, sleep = self._sleep_recorder()
+        rec = _Recorder(responses=[
+            _make_http_error(429),
+            b'{"status":0,"data":"OK"}',
+        ])
+        client = GmoOrderClient(
+            _creds(), http_fn=rec, sleep_fn=sleep,
+            retry_max_attempts=3, retry_base_delay_sec=0.0,
+        )
+        client.place_market_order("BTC_JPY", "BUY", 0.001, 4)
+        self.assertEqual(len(rec.requests), 2)
+        self.assertEqual(len(delays), 1)
+
+    def test_url_error_retries(self) -> None:
+        """URLError (接続失敗 / timeout) も retry 対象。"""
+        delays, sleep = self._sleep_recorder()
+        rec = _Recorder(responses=[
+            urllib.error.URLError("conn refused"),
+            b'{"status":0,"data":"OK"}',
+        ])
+        client = GmoOrderClient(
+            _creds(), http_fn=rec, sleep_fn=sleep,
+            retry_max_attempts=3, retry_base_delay_sec=0.0,
+        )
+        client.place_market_order("BTC_JPY", "BUY", 0.001, 4)
+        self.assertEqual(len(rec.requests), 2)
+
+    def test_max_attempts_exceeded_raises_last_error(self) -> None:
+        """max_attempts まで全部 5xx → 最後のエラーで GmoApiError。"""
+        delays, sleep = self._sleep_recorder()
+        rec = _Recorder(responses=[
+            _make_http_error(500),
+            _make_http_error(502),
+            _make_http_error(503),
+        ])
+        client = GmoOrderClient(
+            _creds(), http_fn=rec, sleep_fn=sleep,
+            retry_max_attempts=3, retry_base_delay_sec=0.0,
+        )
+        with self.assertRaises(GmoApiError) as ctx:
+            client.place_market_order("BTC_JPY", "BUY", 0.001, 4)
+        self.assertEqual(ctx.exception.status, 503)
+        self.assertEqual(len(rec.requests), 3)
+        # 試行間 sleep は (3-1)=2 回まで。最後の attempt 後には sleep しない
+        self.assertEqual(len(delays), 2)
+
+    def test_backoff_caps_at_max_delay(self) -> None:
+        """指数増加が max_delay_sec で頭打ち。"""
+        delays, sleep = self._sleep_recorder()
+        rec = _Recorder(responses=[
+            _make_http_error(500),
+            _make_http_error(500),
+            _make_http_error(500),
+            _make_http_error(500),
+            _make_http_error(500),
+            _make_http_error(500),
+            b'{"status":0,"data":"OK"}',
+        ])
+        client = GmoOrderClient(
+            _creds(), http_fn=rec, sleep_fn=sleep,
+            retry_max_attempts=7,
+            retry_base_delay_sec=1.0,
+            retry_max_delay_sec=4.0,
+        )
+        client.place_market_order("BTC_JPY", "BUY", 0.001, 4)
+        # delays: 1, 2, 4, 4, 4, 4 (cap at 4)
+        self.assertEqual(delays, [1.0, 2.0, 4.0, 4.0, 4.0, 4.0])
+
+    def test_get_retries_too(self) -> None:
+        """GET 経路 (executions 確認) も retry が効く。"""
+        delays, sleep = self._sleep_recorder()
+        rec = _Recorder(responses=[
+            _make_http_error(502),
+            b'{"status":0,"data":[]}',
+        ])
+        client = GmoOrderClient(
+            _creds(), http_fn=rec, sleep_fn=sleep,
+            retry_max_attempts=3, retry_base_delay_sec=0.0,
+        )
+        client.get_executions_by_order_id("ORDER_999")
+        self.assertEqual(len(rec.requests), 2)
+
+
+# ----------------------------------------------------------------------
+# Phase 4b: extract_executions / sum_executions
+# ----------------------------------------------------------------------
+class TestExecutionExtraction(unittest.TestCase):
+    def test_data_as_list(self) -> None:
+        from gmo_order_client import extract_executions
+        raw = {"status": 0, "data": [
+            {"orderId": "X", "executedSize": "0.001", "fee": "0.5"},
+            {"orderId": "X", "executedSize": "0.0005", "fee": "0.25"},
+        ]}
+        self.assertEqual(len(extract_executions(raw)), 2)
+
+    def test_data_as_dict_with_list(self) -> None:
+        from gmo_order_client import extract_executions
+        raw = {"status": 0, "data": {"list": [
+            {"orderId": "X", "executedSize": "0.001", "fee": "0.5"},
+        ], "pagination": {"currentPage": 1}}}
+        self.assertEqual(len(extract_executions(raw)), 1)
+
+    def test_missing_data_returns_empty(self) -> None:
+        from gmo_order_client import extract_executions
+        self.assertEqual(extract_executions({"status": 0}), [])
+
+    def test_sum_executions_totals_size_and_fee(self) -> None:
+        from gmo_order_client import sum_executions
+        size, fee = sum_executions([
+            {"executedSize": "0.0005", "fee": "1.0"},
+            {"executedSize": "0.0005", "fee": "1.5"},
+        ])
+        self.assertAlmostEqual(size, 0.001, places=8)
+        self.assertAlmostEqual(fee, 2.5, places=8)
+
+    def test_sum_executions_falls_back_to_size(self) -> None:
+        """executedSize が無いケースは size でフォールバック。"""
+        from gmo_order_client import sum_executions
+        size, fee = sum_executions([{"size": "0.0008", "fee": "1.2"}])
+        self.assertAlmostEqual(size, 0.0008, places=8)
+        self.assertAlmostEqual(fee, 1.2, places=8)
+
+    def test_sum_executions_ignores_invalid_values(self) -> None:
+        from gmo_order_client import sum_executions
+        size, fee = sum_executions([
+            {"executedSize": "abc", "fee": "1.0"},
+            {"executedSize": "0.001", "fee": "xyz"},
+        ])
+        self.assertAlmostEqual(size, 0.001, places=8)
+        self.assertAlmostEqual(fee, 1.0, places=8)
 
 
 if __name__ == "__main__":

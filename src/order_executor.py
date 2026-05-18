@@ -56,10 +56,13 @@ class OrderExecutor:
         mode: str = "dry_run",
         *,
         order_client: "GmoOrderClient | None" = None,
+        sleep_fn: Any = None,
     ) -> None:
         self.cfg = cfg
         self.mode = mode
         self._order_client = order_client
+        # ポーリング sleep を inject 可能に (テストで no-op に差し替えられる)
+        self._sleep_fn = sleep_fn if sleep_fn is not None else time.sleep
 
         state_dir = Path(os.environ.get("STATE_DIR", "./data"))
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -80,6 +83,9 @@ class OrderExecutor:
         self._size_decimals_by_symbol: dict[str, int] = {
             k: int(v) for k, v in (order_cfg.get("size_decimals") or {}).items()
         }
+        poll_cfg = (order_cfg.get("executions_poll") or {})
+        self._poll_max_attempts: int = int(poll_cfg.get("max_attempts", 5))
+        self._poll_interval_sec: float = float(poll_cfg.get("interval_sec", 2.0))
 
         if mode == "live":
             self._log_live_gate_status()
@@ -245,19 +251,107 @@ class OrderExecutor:
             }
 
         order_id = api_result.get("order_id", "")
-        self._record_live_order(
-            d, status="sent", size_crypto=size_truncated, order_id=order_id,
-        )
         logger.warning(
             "[LIVE ORDER SENT] %s %s size_crypto=%.8f price_ref=%.2f order_id=%s",
             d.symbol, d.side, size_truncated, d.price_ref, order_id,
         )
+
+        # 約定確認 (Phase 4b)
+        fill = self._poll_executions(
+            order_id=order_id, ordered_size=size_truncated,
+        )
+
+        self._record_live_order(
+            d,
+            status=fill["status"],
+            size_crypto=size_truncated,
+            order_id=order_id,
+            executed_size=fill["executed_size"],
+            fee=fill["fee"],
+        )
         return {
-            "status": "sent",
+            "status": fill["status"],
             "symbol": d.symbol,
             "side": d.side,
             "size_crypto": size_truncated,
             "order_id": order_id,
+            "executed_size": fill["executed_size"],
+            "fee": fill["fee"],
+            "poll_attempts": fill["attempts"],
+        }
+
+    def _poll_executions(
+        self, order_id: str, ordered_size: float,
+    ) -> dict[str, Any]:
+        """注文後の約定確認をポーリングし、(filled / partial_fill / not_filled)
+        を判定する。
+
+        - 完全約定 (executed >= ordered) → status="filled"、即終了
+        - 部分約定 (0 < executed < ordered) → status="partial_fill"
+        - 未約定 (executed == 0) → status="not_filled"
+        - APIエラーが retry 越しでも回復しなかった場合 → status="executions_unknown"
+          (約定したかどうか判定不能。手動確認が必要なので呼び出し側が HALT 判断)
+        """
+        from gmo_order_client import (  # 遅延 import (テスト容易性)
+            extract_executions, sum_executions,
+        )
+        from gmo_api_client import GmoApiError
+
+        if self._order_client is None or not order_id:
+            return {
+                "status": "executions_unknown",
+                "executed_size": 0.0,
+                "fee": 0.0,
+                "attempts": 0,
+            }
+
+        executed_size = 0.0
+        fee = 0.0
+        last_error: str | None = None
+        attempts = 0
+        for attempt in range(1, self._poll_max_attempts + 1):
+            attempts = attempt
+            try:
+                raw = self._order_client.get_executions_by_order_id(order_id)
+            except GmoApiError as e:
+                last_error = f"executions poll status={e.status} {e.message}"
+                logger.warning("executions poll error attempt=%d: %s", attempt, last_error)
+            else:
+                executions = extract_executions(raw)
+                executed_size, fee = sum_executions(executions)
+                if ordered_size > 0 and executed_size >= ordered_size:
+                    return {
+                        "status": "filled",
+                        "executed_size": executed_size,
+                        "fee": fee,
+                        "attempts": attempts,
+                    }
+            if attempt < self._poll_max_attempts:
+                self._sleep_fn(self._poll_interval_sec)
+
+        if last_error is not None and executed_size <= 0:
+            # 一度も約定を観測できず最後の試行も API エラーだった → 判定不能
+            logger.error(
+                "[LIVE FILL UNKNOWN] order_id=%s last=%s", order_id, last_error,
+            )
+            return {
+                "status": "executions_unknown",
+                "executed_size": 0.0,
+                "fee": 0.0,
+                "attempts": attempts,
+            }
+        if executed_size <= 0:
+            return {
+                "status": "not_filled",
+                "executed_size": 0.0,
+                "fee": fee,
+                "attempts": attempts,
+            }
+        return {
+            "status": "partial_fill",
+            "executed_size": executed_size,
+            "fee": fee,
+            "attempts": attempts,
         }
 
     # ------------------------------------------------------------------
@@ -269,7 +363,7 @@ class OrderExecutor:
             w.writerow([
                 "ts", "iso_ts", "mode", "symbol", "side",
                 "size_jpy", "size_crypto", "price_ref", "order_id",
-                "status", "reason", "error",
+                "status", "executed_size", "fee", "reason", "error",
             ])
 
     def _record_live_order(
@@ -280,6 +374,8 @@ class OrderExecutor:
         size_crypto: float,
         order_id: str,
         error: str = "",
+        executed_size: float = 0.0,
+        fee: float = 0.0,
     ) -> None:
         """live 注文の試行を ``data/live_orders.jsonl`` / ``.csv`` に追記する。
 
@@ -298,6 +394,8 @@ class OrderExecutor:
             "price_ref": d.price_ref,
             "order_id": order_id,
             "status": status,
+            "executed_size": executed_size,
+            "fee": fee,
             "reason": d.reason,
             "error": error,
         }
@@ -309,7 +407,8 @@ class OrderExecutor:
                 w.writerow([
                     row["ts"], row["iso_ts"], row["mode"], row["symbol"], row["side"],
                     row["size_jpy"], row["size_crypto"], row["price_ref"],
-                    row["order_id"], row["status"], row["reason"], row["error"],
+                    row["order_id"], row["status"], row["executed_size"], row["fee"],
+                    row["reason"], row["error"],
                 ])
         except OSError as e:
             logger.exception("failed to write live order record: %s", e)
