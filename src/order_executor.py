@@ -28,6 +28,7 @@ from risk_guard import Decision
 
 if TYPE_CHECKING:  # pragma: no cover
     from gmo_order_client import GmoOrderClient
+    from risk_guard import RiskGuard
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +57,13 @@ class OrderExecutor:
         mode: str = "dry_run",
         *,
         order_client: "GmoOrderClient | None" = None,
+        risk_guard: "RiskGuard | None" = None,
         sleep_fn: Any = None,
     ) -> None:
         self.cfg = cfg
         self.mode = mode
         self._order_client = order_client
+        self._risk_guard = risk_guard
         # ポーリング sleep を inject 可能に (テストで no-op に差し替えられる)
         self._sleep_fn = sleep_fn if sleep_fn is not None else time.sleep
 
@@ -242,6 +245,10 @@ class OrderExecutor:
                 d, status=f"live_order_error:{e.status}",
                 size_crypto=size_truncated, order_id="", error=str(e),
             )
+            # Phase 4c: RiskGuard に reject を通知。連発で HALT する閾値判定は
+            # RiskGuard.on_order_reject に委ねる。
+            if self._risk_guard is not None:
+                self._risk_guard.on_order_reject(e)
             return {
                 "status": "live_order_error",
                 "symbol": d.symbol,

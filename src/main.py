@@ -477,7 +477,11 @@ def run() -> int:
     watcher = MarketWatcher(cfg)
     scorer = Scorer(cfg)
     guard = RiskGuard(cfg, state)
-    executor = OrderExecutor(cfg, mode=mode)
+    # Phase 4c: risk_guard を OrderExecutor に注入し、live 注文 reject 連発で
+    # HALT する経路を結線する。Phase 4 では mode が dry_run に強制されるため
+    # 実際の reject 経路は走らない (gate3 が NotImplementedError で塞ぐ)。
+    # Phase 5 で gate3 が開いて initial の order_client が刺さると稼働する。
+    executor = OrderExecutor(cfg, mode=mode, risk_guard=guard)
     notifier = Notifier(cfg)
     regime_gate = build_regime_gate(cfg)
 

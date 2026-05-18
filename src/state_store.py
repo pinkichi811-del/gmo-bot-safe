@@ -56,6 +56,7 @@ class StateStore:
             "halt_reason": "",
             "halted_at": 0.0,
             "error_count": 0,
+            "order_reject_count": 0,  # Phase 4c: live 注文 reject の連続回数
             "positions": {},       # symbol -> Position.to_dict()
             "cooldown_until": {},  # symbol -> epoch
             "last_score_ts": 0.0,
@@ -115,6 +116,22 @@ class StateStore:
 
     def reset_errors(self) -> None:
         self._state["error_count"] = 0
+
+    # ------------------------------------------------------------------
+    # 注文 reject カウント (Phase 4c)
+    # ------------------------------------------------------------------
+    # error_count とは別カウンタにすることで、市場データ取得失敗 (error) と
+    # 注文 API rejection (reject) を独立に管理する。reject 連発は明確に
+    # 「注文の前提が崩れている」を意味し、別 HALT 閾値で扱う。
+    def order_reject_count(self) -> int:
+        return int(self._state.get("order_reject_count", 0))
+
+    def increment_order_reject(self) -> int:
+        self._state["order_reject_count"] = self.order_reject_count() + 1
+        return int(self._state["order_reject_count"])
+
+    def reset_order_rejects(self) -> None:
+        self._state["order_reject_count"] = 0
 
     # ------------------------------------------------------------------
     # ポジション

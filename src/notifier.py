@@ -96,3 +96,12 @@ class Notifier:
         if not self.on_error:
             return
         self._dispatch(f"[ERROR] {type(err).__name__}: {err}")
+
+    def notify_order_reject(self, symbol: str, reason: str) -> None:
+        """live 注文 API が reject された時。Phase 4c で導入。
+
+        on_error フラグでフィルタする (注文失敗はエラー扱いの方が観測しやすい)。
+        """
+        if not self.on_error:
+            return
+        self._dispatch(f"[ORDER REJECT] {symbol}: {reason}")

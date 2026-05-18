@@ -388,6 +388,92 @@ class TestExecutionsPolling(_LiveOrderTestBase):
 
 
 # ----------------------------------------------------------------------
+# Phase 4c: RiskGuard との連携と HALT 統合
+# ----------------------------------------------------------------------
+class TestRiskGuardIntegration(_LiveOrderTestBase):
+    """live 注文 reject → RiskGuard.on_order_reject → HALT までの結線。
+
+    RiskGuard を fake で渡さず本物を作って統合的に動作確認する。
+    """
+
+    def _integrated_cfg(self, max_rejects: int = 3) -> dict:
+        return {
+            **BASE_CFG,
+            "risk": {
+                "max_order_rejects_consecutive": max_rejects,
+                "max_consecutive_errors": 5,
+                "halt_on_error": True,
+            },
+            "limits": {},
+            "scorer": {"thresholds": {}},
+            "exits": {},
+            "loop": {},
+            "symbols": {"core": [], "satellite": []},
+        }
+
+    def _make_guard(self, cfg: dict):
+        from risk_guard import RiskGuard
+        from state_store import StateStore
+        state = StateStore(path=str(Path(self._td.name) / "state.json"))
+        return RiskGuard(cfg, state), state
+
+    def test_api_error_calls_on_order_reject(self) -> None:
+        cfg = self._integrated_cfg(max_rejects=5)
+        guard, state = self._make_guard(cfg)
+        err = GmoApiError(
+            status=5, message="insufficient balance", payload=None,
+        )
+        fake = _FakeOrderClient(raise_exc=err)
+        ex = OrderExecutor(cfg, mode="dry_run", order_client=fake, risk_guard=guard)
+        ex._send_live_order_impl(_decision())
+        self.assertEqual(state.order_reject_count(), 1)
+        self.assertFalse(guard.is_halted())
+
+    def test_three_rejects_trigger_halt(self) -> None:
+        cfg = self._integrated_cfg(max_rejects=3)
+        guard, state = self._make_guard(cfg)
+        err = GmoApiError(status=5, message="bad", payload=None)
+        fake = _FakeOrderClient(raise_exc=err)
+        ex = OrderExecutor(cfg, mode="dry_run", order_client=fake, risk_guard=guard)
+        ex._send_live_order_impl(_decision())
+        ex._send_live_order_impl(_decision())
+        ex._send_live_order_impl(_decision())
+        self.assertEqual(state.order_reject_count(), 3)
+        self.assertTrue(guard.is_halted())
+        self.assertIn("order_rejects", state.halt_reason())
+
+    def test_success_resets_reject_counter(self) -> None:
+        """reject 2 回 → 成功 1 回 (guard.on_success) → reject カウンタ=0。"""
+        cfg = self._integrated_cfg(max_rejects=3)
+        guard, state = self._make_guard(cfg)
+
+        # 2 回 reject (HALT 一歩手前)
+        err = GmoApiError(status=5, message="bad", payload=None)
+        fake_fail = _FakeOrderClient(raise_exc=err)
+        ex = OrderExecutor(cfg, mode="dry_run", order_client=fake_fail, risk_guard=guard)
+        ex._send_live_order_impl(_decision())
+        ex._send_live_order_impl(_decision())
+        self.assertEqual(state.order_reject_count(), 2)
+
+        # main.py のサイクル終端を模倣
+        guard.on_success()
+        self.assertEqual(state.order_reject_count(), 0)
+
+        # 次の reject は 1 回目から再カウント (HALT しない)
+        ex._send_live_order_impl(_decision())
+        self.assertEqual(state.order_reject_count(), 1)
+        self.assertFalse(guard.is_halted())
+
+    def test_no_risk_guard_does_not_crash(self) -> None:
+        """risk_guard=None でも GmoApiError は普通に返るだけで例外を吐かない。"""
+        err = GmoApiError(status=5, message="bad", payload=None)
+        fake = _FakeOrderClient(raise_exc=err)
+        ex = OrderExecutor(BASE_CFG, mode="dry_run", order_client=fake, risk_guard=None)
+        result = ex._send_live_order_impl(_decision())
+        self.assertEqual(result["status"], "live_order_error")
+
+
+# ----------------------------------------------------------------------
 # Hard Rule 物理保証: `_send_live_order` 自体は依然 NotImplementedError
 # ----------------------------------------------------------------------
 class TestSendLiveOrderRemainsNotImplemented(_LiveOrderTestBase):
