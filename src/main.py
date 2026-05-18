@@ -535,6 +535,19 @@ def _setup_logging(cfg: dict[str, Any]) -> None:
     fh.setFormatter(logging.Formatter(fmt))
     root.addHandler(fh)
 
+    # API キー・シークレットが何かの拍子に log record に乗っても出力前に伏字化する。
+    # filter は handler 個別に attach（root 直付けは複数 handler を経由するときに
+    # 二重置換になり得るため避ける）。
+    from log_filters import SecretMaskFilter
+    _secrets = [
+        os.environ.get("GMO_API_KEY", ""),
+        os.environ.get("GMO_API_SECRET", ""),
+    ]
+    if any(_secrets):
+        _mask = SecretMaskFilter(_secrets)
+        ch.addFilter(_mask)
+        fh.addFilter(_mask)
+
 
 if __name__ == "__main__":
     _pre_cfg = load_config()
