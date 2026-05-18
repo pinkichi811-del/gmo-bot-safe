@@ -1,11 +1,14 @@
 """市場データ取得。
 
-抽象層 `MarketDataSource` と dry-run 用の `StubMarketDataSource` を提供する。
-live 実装時は `GmoMarketDataSource` を追加し、MarketWatcher のコンストラクタで
-差し替える（設定 or 環境変数で選択）。
+抽象層 `MarketDataSource` と 2 つの実装を提供する:
+
+- `StubMarketDataSource`  : dry-run 用の合成データ
+- `GmoMarketDataSource`   : GMOコイン Public API 経由の本物のデータ
+                            (Phase 3 で追加、live mode の自動切替は Phase 4)
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import random
 import time
@@ -138,14 +141,109 @@ class StubMarketDataSource(MarketDataSource):
 # ----------------------------------------------------------------------
 # MarketWatcher
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# GMOコイン Public API ソース (Phase 3)
+# ----------------------------------------------------------------------
+# bot 内のシンボル名 (BTC_JPY) は GMO 現物 API のシンボル (BTC) と異なる。
+_GMO_SYMBOL_MAP: dict[str, str] = {
+    "BTC_JPY": "BTC",
+    "ETH_JPY": "ETH",
+    "SOL_JPY": "SOL",
+    "XRP_JPY": "XRP",
+    "DOGE_JPY": "DOGE",
+}
+# 5min interval は 1 日 288 本まで。それを超えるなら 1hour に切り替える。
+_BARS_PER_DAY_5MIN = 288
+
+
+def _to_gmo_symbol(symbol: str) -> str:
+    """`BTC_JPY` -> `BTC`。未知シンボルはそのまま返す（API 側で 4xx になる）。"""
+    return _GMO_SYMBOL_MAP.get(symbol, symbol)
+
+
+def _pick_interval(n: int) -> str:
+    """必要本数から GMO klines の interval を選ぶ。"""
+    return "5min" if n <= _BARS_PER_DAY_5MIN else "1hour"
+
+
+def _ymd_utc(epoch_s: float) -> str:
+    return dt.datetime.fromtimestamp(epoch_s, tz=dt.timezone.utc).strftime("%Y%m%d")
+
+
+class GmoMarketDataSource(MarketDataSource):
+    """GMOコイン Public API を叩いて Ticker / Candle を返す。
+
+    private 系 (残高など) はここに混ぜず、`GmoApiClient` を直接使う。
+    main.py での自動切替は Phase 3 ではやらない（手動で `source=` を渡す）。
+    """
+
+    def __init__(self, client: Any, *, clock_fn: Any = time.time) -> None:
+        self._client = client
+        self._clock_fn = clock_fn
+
+    def fetch_tickers(self, symbols: list[str]) -> dict[str, Ticker]:
+        out: dict[str, Ticker] = {}
+        for sym in symbols:
+            gmo_sym = _to_gmo_symbol(sym)
+            payload = self._client.get_ticker(gmo_sym)
+            data = (payload.get("data") or [{}])[0]
+            last = float(data.get("last", 0.0))
+            bid = float(data.get("bid", last))
+            ask = float(data.get("ask", last))
+            volume = float(data.get("volume", 0.0))
+            out[sym] = Ticker(
+                symbol=sym,
+                last=last,
+                bid=bid,
+                ask=ask,
+                volume=volume,
+                ts=self._clock_fn(),
+            )
+        return out
+
+    def fetch_ohlcv(self, symbols: list[str], n: int = 30) -> dict[str, list[Candle]]:
+        interval = _pick_interval(n)
+        date = _ymd_utc(self._clock_fn())
+        out: dict[str, list[Candle]] = {}
+        for sym in symbols:
+            gmo_sym = _to_gmo_symbol(sym)
+            payload = self._client.get_klines(gmo_sym, interval=interval, date=date)
+            rows = payload.get("data") or []
+            candles = [_row_to_candle(r) for r in rows]
+            out[sym] = candles[-n:] if len(candles) > n else candles
+        return out
+
+
+def _row_to_candle(row: dict[str, Any]) -> Candle:
+    """GMO klines 1 行 → `Candle`。
+
+    GMO の応答は `{"openTime":"1700000000000","open":"...","high":"...",
+    "low":"...","close":"...","volume":"..."}`。openTime は ms。
+    """
+    ts_ms = int(row.get("openTime", 0))
+    return Candle(
+        ts=ts_ms / 1000.0,
+        open=float(row.get("open", 0.0)),
+        high=float(row.get("high", 0.0)),
+        low=float(row.get("low", 0.0)),
+        close=float(row.get("close", 0.0)),
+        volume=float(row.get("volume", 0.0)),
+    )
+
+
+# ----------------------------------------------------------------------
+# MarketWatcher
+# ----------------------------------------------------------------------
 class MarketWatcher:
     def __init__(self, cfg: dict[str, Any], source: MarketDataSource | None = None) -> None:
         self.cfg = cfg
         self.symbols: list[str] = self._collect_symbols(cfg)
         self.ohlcv_n: int = self._required_ohlcv_n(cfg)
-        # TODO(live): 環境変数/設定で source を切り替える。
-        #   live: GmoMarketDataSource（GMOコイン Public API /v1/ticker, /v1/klines）。
-        #   dry_run: StubMarketDataSource（このまま）。
+        # source を渡せば任意の実装に差し替え可能。デフォルトは dry-run 用 Stub。
+        # GmoMarketDataSource を使う場合は呼び出し側で
+        #   from gmo_api_client import GmoApiClient
+        #   watcher = MarketWatcher(cfg, source=GmoMarketDataSource(GmoApiClient.from_env()))
+        # main.py での自動切替（mode=live で GMO に切る）は Phase 4 で実装。
         self.source: MarketDataSource = source or StubMarketDataSource()
 
     @staticmethod
