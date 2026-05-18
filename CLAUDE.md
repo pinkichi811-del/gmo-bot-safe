@@ -117,3 +117,40 @@ GMOコイン向けの暗号資産現物自動売買bot。
 - 新しい外部 API 呼び出しは必ずモック可能な形で書く。
 - ログにはシンボル・スコア・判定理由を含める。約定・HALT は WARN 以上。
 - テストは `tests/` に入れる（未作成）。
+
+---
+
+## 失敗ログ
+
+### 2026-05-17: logrotate が日付付き jsonl を二重 rotate して aggregate を狂わせた
+
+**現象**: Phase 2 観察の進行判断を出そうとして `python3 scripts/aggregate.py --days 13`
+を叩いたところ、`100% regime_blocked:ndx_trend / 0 trades / 0 PnL` という嘘の結果が
+出た。これだけ見ると「regime gate が 13 日間ずっと block しっぱなしで観察不能」と
+誤判断し、Phase 1 戻りや観察リセットを検討するハメになるところだった。
+
+**真の状況**: bot 自体は健全稼働中 (cycles 286/日 = 5分周期完全、PF 45 / 月 trades 394
+の偽利益が出るほど entry/exit 連発、regime block 率は妥当な 11.3%)。直近 cycle の
+生 JSON に `regime: {allow_buy: true}` と明記されていたため矛盾に気付いた。
+
+**根本原因**: `deploy/logrotate.conf` が `data/score_log/*.jsonl` を `daily / rotate 60`
+で rotate していた。アプリ側は `<YYYY-MM-DD>.jsonl` 形式の日付ファイル名を使う設計
+だが、logrotate はこれもさらに rotate して `<date>.jsonl.1` にリネームする。
+`aggregate.py` の glob は `<date>.jsonl` のみを拾うため `.jsonl.1` の 5/5〜5/15 が
+集計対象から漏れ、残った 5/16〜5/17 の 2 ファイル分しか拾えていなかった。
+compare_old 側は logrotate のパスマッチ (`data/score_log/`) から外れていたため無傷で、
+これが「同じ aggregate で並走側だけ正常」という非対称を生み、原因切り分けを難しくした。
+
+**修正**:
+- VM 上で `data/score_log/*.jsonl.1` を `*.jsonl` にリネームして集計対象を救出
+- `/etc/logrotate.d/gmo-bot-safe` を `.disabled` にリネームして一旦無効化
+- `deploy/logrotate.conf` を修正、score_log は logrotate 対象から外す
+  (理由のコメントを設定ファイルに明記して同じ事故を防ぐ)
+
+**教訓**:
+- aggregate の "想定外の集計結果" を見たら、aggregate のデータソース (どのファイル
+  glob を読んでいるか) と実際のファイル名を必ず突き合わせる。"bot が壊れた" と思う前に
+  "集計が壊れた" を疑う。
+- 直近 cycle の生 JSON が真実、aggregate のサマリは加工結果。**矛盾したら生 JSON が勝つ**。
+- 日付ファイル名のローテート設計は logrotate と二重に当てるな。
+  (アプリ側 TimedRotatingFileHandler などで日付付きファイルを作るときは logrotate 不要)
