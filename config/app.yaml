@@ -166,10 +166,46 @@ risk:
   halt_on_error: true
   halt_on_price_gap_pct: 10.0
   max_consecutive_errors: 5
+  # Phase 4c: live 注文の reject (GMO API が返す業務エラー、4xx 等) が連続で
+  # この回数発生したら HALT する。注文の前提 (残高、認証、レート制限、API 仕様)
+  # が崩れている兆候として扱い、自動再開はしない。
+  max_order_rejects_consecutive: 3
   per_trade_jpy_max: 10000
   block_buy_below_cash_ratio: 0.20
   stop_file: ./STOP
   auto_resume: false
+
+# -----------------------------------------------------------------------------
+# 注文サイズ仕様（Phase 4 で導入。live 注文時に使われる）
+#   min_size_by_symbol : GMOコイン公式仕様の最小ロット（暗号資産数量）
+#   size_decimals      : GMO 受付の小数桁数（端数は切り捨てで丸める）
+#   いずれも 2026-05 時点の値。仕様変更があれば公式ドキュメントで確認のうえ更新する。
+#
+#   http_retry        : POST/GET の 429 / 5xx / URLError 時の指数バックオフ
+#                       4xx (auth, validation) は即失敗（retry しない）
+#   executions_poll   : POST 後に GET /v1/executions をポーリングして約定確認する設定
+#                       max_attempts × interval_sec が「最大待ち時間」
+# -----------------------------------------------------------------------------
+order:
+  min_size_by_symbol:
+    BTC_JPY: 0.0001
+    ETH_JPY: 0.01
+    SOL_JPY: 0.1
+    XRP_JPY: 1
+    DOGE_JPY: 1
+  size_decimals:
+    BTC_JPY: 4
+    ETH_JPY: 2
+    SOL_JPY: 1
+    XRP_JPY: 0
+    DOGE_JPY: 0
+  http_retry:
+    max_attempts: 3
+    base_delay_sec: 1.0
+    max_delay_sec: 30.0
+  executions_poll:
+    max_attempts: 5
+    interval_sec: 2.0
 
 # -----------------------------------------------------------------------------
 # ポートフォリオ（dry-run 用の擬似ポートフォリオ）

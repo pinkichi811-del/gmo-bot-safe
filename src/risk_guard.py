@@ -56,6 +56,9 @@ class RiskGuard:
         risk = cfg.get("risk", {}) or {}
         self.halt_on_error: bool = bool(risk.get("halt_on_error", True))
         self.max_consec_errors: int = int(risk.get("max_consecutive_errors", 5))
+        self.max_order_rejects: int = int(
+            risk.get("max_order_rejects_consecutive", 3)
+        )
         self.halt_on_price_gap_pct: float = float(risk.get("halt_on_price_gap_pct", 10.0))
         self.per_trade_jpy_max: float = float(risk.get("per_trade_jpy_max", 10000))
         self.block_buy_below_cash_ratio: float = float(
@@ -115,10 +118,28 @@ class RiskGuard:
         if self.halt_on_error and count >= self.max_consec_errors:
             self.halt(f"consecutive_errors>={self.max_consec_errors}")
 
+    def on_order_reject(self, err: Exception | str) -> None:
+        """live 注文 API が reject された (POST 失敗) ことを記録。
+
+        ``on_error`` とは別カウンタで、閾値到達で HALT する。注文の前提
+        (残高、認証、レート制限、API 仕様変更等) が崩れている可能性が高く、
+        サイクルを跨いで自動再試行すべきではないため。
+        """
+        count = self.state.increment_order_reject()
+        logger.warning("risk_guard order_reject_count=%d err=%r", count, err)
+        if count >= self.max_order_rejects:
+            self.halt(f"order_rejects>={self.max_order_rejects}")
+
     def on_success(self) -> None:
         if self.state.error_count() > 0:
             logger.info("resetting error_count (was %d)", self.state.error_count())
+        if self.state.order_reject_count() > 0:
+            logger.info(
+                "resetting order_reject_count (was %d)",
+                self.state.order_reject_count(),
+            )
         self.state.reset_errors()
+        self.state.reset_order_rejects()
 
     # ------------------------------------------------------------------
     # 健全性チェック

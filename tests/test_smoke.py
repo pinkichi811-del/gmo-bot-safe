@@ -162,6 +162,73 @@ class TestRiskGuard(unittest.TestCase):
             self.assertTrue(verdicts[0].passes)
             self.assertTrue(verdicts[0].strong)
 
+    def test_on_order_reject_increments_and_halts(self) -> None:
+        """3 回連発で HALT、それ未満では HALT しない。"""
+        with tempfile.TemporaryDirectory() as td:
+            state = self._state(td)
+            g = RiskGuard(BASE_CFG, state)
+            self.assertEqual(state.order_reject_count(), 0)
+            g.on_order_reject("a")
+            self.assertEqual(state.order_reject_count(), 1)
+            self.assertFalse(g.is_halted())
+            g.on_order_reject("b")
+            self.assertEqual(state.order_reject_count(), 2)
+            self.assertFalse(g.is_halted())
+            g.on_order_reject("c")
+            self.assertEqual(state.order_reject_count(), 3)
+            self.assertTrue(g.is_halted())
+            self.assertIn("order_rejects", state.halt_reason())
+
+    def test_on_success_resets_reject_count(self) -> None:
+        """サイクル成功でカウンタがゼロに戻る (連続性が切れる)。"""
+        with tempfile.TemporaryDirectory() as td:
+            state = self._state(td)
+            g = RiskGuard(BASE_CFG, state)
+            g.on_order_reject("a")
+            g.on_order_reject("b")
+            self.assertEqual(state.order_reject_count(), 2)
+            g.on_success()
+            self.assertEqual(state.order_reject_count(), 0)
+            # リセット後の reject は 1 から再カウント
+            g.on_order_reject("c")
+            self.assertEqual(state.order_reject_count(), 1)
+            self.assertFalse(g.is_halted())
+
+    def test_reject_and_error_counters_are_independent(self) -> None:
+        """on_order_reject と on_error のカウンタが独立。
+
+        一方の閾値到達でもう一方が HALT を引き起こさないこと、また両方の
+        閾値を別々に持つこと。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            state = self._state(td)
+            g = RiskGuard(BASE_CFG, state)
+            # error を 2 回 (閾値 5 に未到達)、reject を 2 回 (閾値 3 に未到達)
+            g.on_error(RuntimeError("e1"))
+            g.on_error(RuntimeError("e2"))
+            g.on_order_reject("r1")
+            g.on_order_reject("r2")
+            self.assertEqual(state.error_count(), 2)
+            self.assertEqual(state.order_reject_count(), 2)
+            self.assertFalse(g.is_halted())
+            # reject が 3 回目で HALT (error は閾値未到達のまま)
+            g.on_order_reject("r3")
+            self.assertTrue(g.is_halted())
+            self.assertIn("order_rejects", state.halt_reason())
+            self.assertEqual(state.error_count(), 2)  # error カウンタは独立
+
+    def test_custom_max_order_rejects(self) -> None:
+        """config の `max_order_rejects_consecutive` で閾値が変わる。"""
+        with tempfile.TemporaryDirectory() as td:
+            state = self._state(td)
+            cfg = {
+                **BASE_CFG,
+                "risk": {**BASE_CFG["risk"], "max_order_rejects_consecutive": 1},
+            }
+            g = RiskGuard(cfg, state)
+            g.on_order_reject("only_one")
+            self.assertTrue(g.is_halted())
+
     def test_sell_stop_loss_fires(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             state = self._state(td)
