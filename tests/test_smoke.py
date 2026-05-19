@@ -276,20 +276,37 @@ class TestLiveGates(unittest.TestCase):
             price_ref=100.0, reason="test", strong=False,
         )
 
-    def test_code_gate_is_closed_by_default(self) -> None:
+    def test_code_gate_is_open_after_phase5(self) -> None:
+        """Phase 5 で gate1 (ENABLE_LIVE_ORDER) は **意図的に True**。
+
+        旧名: test_code_gate_is_closed_by_default。Phase 4 までは「False の
+        ままであること」を assert していたが、Phase 5 の単独 PR で True に
+        切り替わった。本テストは「Phase 5 以降は意図的に True」を確認する
+        反転 assert として残す (履歴 trace)。
+        """
         import order_executor as oe
-        self.assertFalse(oe.ENABLE_LIVE_ORDER,
-                         "ENABLE_LIVE_ORDER は False のままであること")
+        self.assertTrue(oe.ENABLE_LIVE_ORDER,
+                        "Phase 5 で ENABLE_LIVE_ORDER は True に変更済み")
 
     def test_live_blocked_by_code_gate(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            os.environ["STATE_DIR"] = td
-            try:
+        """Phase 5 で gate1 は常時 True だが、テスト内で一時的に False に
+        戻すと code_gate でブロックされることを確認する (回帰防止)。
+
+        運用上 ENABLE_LIVE_ORDER を False に戻すのは緊急停止の唯一の手段。
+        その経路が壊れていないことを保証する意味で残す。
+        """
+        import order_executor as oe
+        old_code = oe.ENABLE_LIVE_ORDER
+        oe.ENABLE_LIVE_ORDER = False
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                os.environ["STATE_DIR"] = td
                 ex = OrderExecutor(BASE_CFG, mode="live")
                 result = ex.execute(self._decision())
                 self.assertEqual(result["status"], "blocked_by_code_gate")
-            finally:
-                os.environ.pop("STATE_DIR", None)
+        finally:
+            oe.ENABLE_LIVE_ORDER = old_code
+            os.environ.pop("STATE_DIR", None)
 
     def test_live_blocked_by_env_gate(self) -> None:
         import order_executor as oe

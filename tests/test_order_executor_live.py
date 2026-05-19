@@ -474,20 +474,37 @@ class TestRiskGuardIntegration(_LiveOrderTestBase):
 
 
 # ----------------------------------------------------------------------
-# Hard Rule 物理保証: `_send_live_order` 自体は依然 NotImplementedError
+# Phase 5 以降: gate1 と gate3 が両方開いた状態の挙動確認
+# (旧クラス名 TestSendLiveOrderRemainsNotImplemented を Phase 5 で改名)
 # ----------------------------------------------------------------------
-class TestSendLiveOrderRemainsNotImplemented(_LiveOrderTestBase):
-    """Phase 4 の追加コードが gate3 を破壊していないことを再確認する。"""
+class TestSendLiveOrderRoutesToImpl(_LiveOrderTestBase):
+    """Phase 5 で `_send_live_order` は `_send_live_order_impl` への薄い委譲。
 
-    def test_send_live_order_still_raises(self) -> None:
+    Phase 4 までは「`_send_live_order` が NotImplementedError を raise する」
+    という gate3 物理保証を assert していたが、Phase 5 の単独 PR で
+    `return self._send_live_order_impl(d)` に置き換わった。本クラスは
+    その新しい配線を回帰防止のために assert する。
+    """
+
+    def test_send_live_order_routes_to_impl(self) -> None:
+        """`_send_live_order` を呼ぶと `_send_live_order_impl` の結果が返る。
+
+        デフォルトの `_FakeOrderClient` は完全約定を返すので filled になる。
+        """
         fake = _FakeOrderClient()
         ex = OrderExecutor(BASE_CFG, mode="dry_run", order_client=fake)
-        with self.assertRaises(NotImplementedError):
-            ex._send_live_order(_decision())
+        result = ex._send_live_order(_decision())
+        self.assertEqual(result["status"], "filled")
+        self.assertEqual(result["order_id"], "FAKE_999")
 
-    def test_enable_live_order_constant_is_false(self) -> None:
+    def test_enable_live_order_constant_is_true(self) -> None:
+        """Phase 5 の単独 PR で gate1 が True に切り替わった事実を assert。
+
+        以降このフラグが False に戻る場合は **緊急停止** を意味するため、
+        その変更は単独 PR で人間レビューを経て行う運用とする (DESIGN.md §7)。
+        """
         import order_executor as oe
-        self.assertFalse(oe.ENABLE_LIVE_ORDER)
+        self.assertTrue(oe.ENABLE_LIVE_ORDER)
 
 
 if __name__ == "__main__":
