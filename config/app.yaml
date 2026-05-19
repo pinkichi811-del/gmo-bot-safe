@@ -170,7 +170,11 @@ risk:
   # この回数発生したら HALT する。注文の前提 (残高、認証、レート制限、API 仕様)
   # が崩れている兆候として扱い、自動再開はしない。
   max_order_rejects_consecutive: 3
-  per_trade_jpy_max: 10000
+  # Phase 5 (2026-05-19): live 解禁の初動として 1 注文上限を **3,000 円** に
+  # 絞る (DESIGN.md §1 の 7 条件のうち #7、ROADMAP の Phase 5 「1,000〜3,000 円」
+  # 範囲の上限値)。Phase 6 の小額並走で 1〜2 週間判定一致を確認できたら、
+  # 段階的に元の値 (10,000 円) まで戻す予定。
+  per_trade_jpy_max: 3000
   block_buy_below_cash_ratio: 0.20
   stop_file: ./STOP
   auto_resume: false
