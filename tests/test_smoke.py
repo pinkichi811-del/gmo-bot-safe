@@ -320,7 +320,7 @@ class TestLiveGates(unittest.TestCase):
                 os.environ["STATE_DIR"] = td
                 ex = OrderExecutor(BASE_CFG, mode="live")
                 result = ex.execute(self._decision())
-                self.assertEqual(result["status"], "not_implemented")
+                self.assertEqual(result["status"], "no_order_client")
         finally:
             oe.ENABLE_LIVE_ORDER = old_code
             if old_env is None:

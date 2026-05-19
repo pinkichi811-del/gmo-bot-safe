@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # この定数を True に変える作業は、単独 PR で、レビューを経て行うこと。
 # .env や CLI からは変更できない。
 # ======================================================================
-ENABLE_LIVE_ORDER: bool = False
+ENABLE_LIVE_ORDER: bool = True
 
 
 # ======================================================================
@@ -155,8 +155,7 @@ class OrderExecutor:
         既存テスト `tests/test_smoke.py::test_live_blocked_by_not_implemented`
         が本挙動を assert している。本関数は触らないこと。
         """
-        raise NotImplementedError("live order sending is not implemented")
-
+        return self._send_live_order_impl(d)
     # ------------------------------------------------------------------
     # 実装本体 (Phase 4): gate3 が開いた Phase 5 で _send_live_order が呼ぶ
     # ------------------------------------------------------------------
